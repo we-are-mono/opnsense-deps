@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# PROVIDE: dpa_app
+# REQUIRE: kldxref
+# BEFORE:  NETWORKING
+# KEYWORD: shutdown
+#
+# dpa_app — Program FMan PCD classification for CDX hardware offload.
+# Must run BEFORE interfaces are brought up so FMan has CDX PCD
+# (parser + keygen + CC tree) in place before any traffic flows.
+#
+# Expected files on target:
+#   /etc/cdx_cfg.xml              — FMan port-to-policy mapping (board-specific)
+#   /etc/cdx_pcd.xml              — PCD classification definitions
+#   /etc/cdx_sp.xml               — Soft parser schemas
+#   /etc/fmc/config/hxs_pdl_v3.xml — Protocol Definition Language (FMC built-in)
+#
+
+. /etc/rc.subr
+
+name="dpa_app"
+rcvar="dpa_app_enable"
+desc="FMan PCD classification setup for CDX"
+
+start_cmd="dpa_app_start"
+stop_cmd=":"
+
+# One-shot command, not a daemon
+start_precmd="dpa_app_prestart"
+
+dpa_app_prestart()
+{
+	# Verify CDX module is loaded
+	if ! kldstat -q -m cdx; then
+		warn "cdx.ko not loaded — skipping dpa_app"
+		return 1
+	fi
+
+	# Verify chardev exists
+	if [ ! -c /dev/fm0 ]; then
+		warn "/dev/fm0 not found — FMD chardev not ready"
+		return 1
+	fi
+
+	# Verify required XML files exist
+	for f in /etc/cdx_cfg.xml /etc/cdx_pcd.xml /etc/fmc/config/hxs_pdl_v3.xml; do
+		if [ ! -f "$f" ]; then
+			warn "$f not found"
+			return 1
+		fi
+	done
+}
+
+dpa_app_start()
+{
+	echo "Starting ${name}: programming FMan PCD..."
+	# dpa_app uses hardcoded paths:
+	#   /etc/cdx_cfg.xml, /etc/cdx_pcd.xml,
+	#   /etc/cdx_sp.xml, /etc/fmc/config/hxs_pdl_v3.xml
+	/usr/local/sbin/dpa_app
+
+	if [ $? -eq 0 ]; then
+		echo "FMan PCD programmed successfully."
+	else
+		warn "dpa_app failed — CDX offload will not work"
+	fi
+}
+
+load_rc_config $name
+
+: ${dpa_app_enable:="NO"}
+
+run_rc_command "$1"

@@ -1,0 +1,50 @@
+# cmmctl cross-compilation Makefile for arm64
+#
+# Usage:
+#   mkdir -p /tmp/cmmctl-build && cd /tmp/cmmctl-build
+#   make -f /build/opnsense-deps/fastpath/cmmctl/Makefile.cross clean all
+#
+# Requires OPNsense base build first:
+#   sudo make -C /build/opnsense-build base DEVICE=MONO-GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build
+#
+# Copyright 2026 Mono Technologies Inc.
+# SPDX-License-Identifier: BSD-2-Clause
+
+SYSROOT?=	/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+CC?=		cc
+TARGET?=	--target=aarch64-unknown-freebsd14.3
+
+SRCDIR?=	${MAKEFILE:H}/..
+CTL_DIR=	${SRCDIR}/cmmctl
+CMM_DIR=	${SRCDIR}/cmm
+
+CTL_SRCS=	cmmctl.c cmmctl_qm.c cmmctl_tunnel.c cmmctl_stat.c cmmctl_ff.c \
+		cmmctl_socket.c cmmctl_bridge.c cmmctl_pktcap.c cmmctl_prf.c \
+		cmmctl_natpt.c cmmctl_icc.c cmmctl_l2tp.c cmmctl_macvlan.c \
+		cmmctl_tx.c
+CTL_OBJS=	${CTL_SRCS:.c=.o}
+
+PROG=		cmmctl
+
+CFLAGS=		-O2 -pipe -Wall -Wextra -Wno-unused-parameter
+CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
+CFLAGS+=	-I${CMM_DIR} -I${SRCDIR}/include
+CFLAGS+=	-DLS1043
+
+LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
+LIBS=	-lpcap
+
+all: ${PROG}
+
+.for src in ${CTL_SRCS}
+${src:.c=.o}: ${CTL_DIR}/${src}
+	${CC} ${CFLAGS} -c -o ${.TARGET} ${CTL_DIR}/${src}
+.endfor
+
+${PROG}: ${CTL_OBJS}
+	${CC} ${LDFLAGS} -o ${.TARGET} ${CTL_OBJS} ${LIBS}
+
+clean:
+	rm -f ${CTL_OBJS} ${PROG}
+
+.PHONY: all clean

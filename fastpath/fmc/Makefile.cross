@@ -1,0 +1,100 @@
+# FMC cross-compilation Makefile for FreeBSD arm64
+#
+# Usage:
+#   make -f /build/opnsense-deps/fastpath/fmc/Makefile.cross
+#
+# Builds in the current directory (use /tmp/fmc-build or similar).
+# Requires:
+#   - buildworld first (for sysroot)
+#   - libfm.a from fmlib build (Phase 2)
+#   - libxml2 cross-compiled for arm64 (in sysroot)
+#
+# Copyright 2026 Mono Technologies Inc.
+# SPDX-License-Identifier: BSD-2-Clause
+
+SYSROOT?=	/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+CC?=		cc
+CXX?=		c++
+AR?=		ar
+TARGET?=	--target=aarch64-unknown-freebsd14.3
+
+SRCDIR?=	${MAKEFILE:H}/source
+FMLIB_INC?=	${MAKEFILE:H}/../fmlib/include/fmd
+FMLIB_LIB?=	/tmp/fmlib-build
+TCLAP_INC?=	${MAKEFILE:H}/tclap
+
+CFLAGS=		-O2 -pipe -Wall -fPIC
+CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
+CFLAGS+=	-DNCSW_LINUX -DLS1043 -D__STDC_LIMIT_MACROS
+CFLAGS+=	-I${FMLIB_INC}
+CFLAGS+=	-I${FMLIB_INC}/Peripherals
+CFLAGS+=	-I${FMLIB_INC}/Peripherals/common
+CFLAGS+=	-I${FMLIB_INC}/integrations
+CFLAGS+=	-I${SYSROOT}/usr/local/include/libxml2
+CFLAGS+=	-I${TCLAP_INC}/..
+
+CXXFLAGS=	${CFLAGS}
+
+LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
+LDFLAGS+=	-L${FMLIB_LIB} -L${SYSROOT}/usr/local/lib
+LIBS=		-lfmc -lfm -lxml2 -lz -lm -lpthread
+
+# Library objects (everything except FMC.o and FMCDummyDriver.o)
+LIB_OBJS=	libfmc.o fmc_exec.o \
+		FMCCFGReader.o FMCPDLReader.o FMCPCDReader.o \
+		FMCSPCreateCode.o FMCSPDumpCode.o FMCSPDumpIR.o \
+		FMCSPDumpParse.o FMCSPIR.o \
+		FMCSPReviseCode.o FMCSPReviseIR.o FMCSP.o \
+		FMCSPExpr.o FMCSPExprLexer.o \
+		FMCPCDModel.o FMCCModelOutput.o \
+		FMCTaskDef.o FMCUtils.o FMCGenericError.o \
+		spa/dll.o spa/fm_sp.o spa/fm_sp_assembler.tab.o \
+		spa/fm_sp_private.o spa/htbl.o spa/lex._fmsp_assembler_yy.o
+
+# CLI binary objects
+CLI_OBJS=	FMC.o FMCUtils.o FMCGenericError.o
+
+LIB=		libfmc.a
+PROG=		fmc
+
+all: ${LIB} ${PROG}
+
+# C source files
+.for src in fmc_exec.c FMCDummyDriver.c
+${src:.c=.o}: ${SRCDIR}/${src}
+	${CC} ${CFLAGS} -c -o ${.TARGET} ${SRCDIR}/${src}
+.endfor
+
+# spa/ C source files
+.for src in dll.c fm_sp.c fm_sp_assembler.tab.c fm_sp_private.c htbl.c lex._fmsp_assembler_yy.c
+spa/${src:.c=.o}: ${SRCDIR}/spa/${src}
+	@mkdir -p spa
+	${CC} ${CFLAGS} -c -o ${.TARGET} ${SRCDIR}/spa/${src}
+.endfor
+
+# C++ source files
+CPP_SRCS=	libfmc.cpp FMCCFGReader.cpp FMCPDLReader.cpp FMCPCDReader.cpp \
+		FMCSPCreateCode.cpp FMCSPDumpCode.cpp FMCSPDumpIR.cpp \
+		FMCSPDumpParse.cpp FMCSPIR.cpp \
+		FMCSPReviseCode.cpp FMCSPReviseIR.cpp FMCSP.cpp \
+		FMCSPExpr.cpp FMCSPExprLexer.cpp \
+		FMCPCDModel.cpp FMCCModelOutput.cpp \
+		FMCTaskDef.cpp FMCUtils.cpp FMCGenericError.cpp \
+		FMC.cpp
+
+.for src in ${CPP_SRCS}
+${src:.cpp=.o}: ${SRCDIR}/${src}
+	${CXX} ${CXXFLAGS} -c -o ${.TARGET} ${SRCDIR}/${src}
+.endfor
+
+${LIB}: ${LIB_OBJS}
+	${AR} rcs ${LIB} ${LIB_OBJS}
+
+${PROG}: ${CLI_OBJS} ${LIB}
+	${CXX} ${LDFLAGS} -o ${PROG} ${CLI_OBJS} -L. ${LIBS}
+
+clean:
+	rm -f ${LIB_OBJS} ${CLI_OBJS} ${LIB} ${PROG}
+	rm -rf spa
+
+.PHONY: all clean

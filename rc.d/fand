@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# PROVIDE: fand
+# REQUIRE: DAEMON
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="fand"
+desc="Fan control daemon"
+rcvar="fand_enable"
+command="/usr/local/sbin/${name}"
+command_args="-d"
+
+load_rc_config $name
+run_rc_command "$1"

@@ -1,0 +1,59 @@
+# dpa_app cross-compilation Makefile for FreeBSD arm64
+#
+# Usage:
+#   make -f /build/opnsense-deps/fastpath/dpa_app/Makefile.cross
+#
+# Builds in the current directory (use /tmp/dpa_app-build or similar).
+# Requires:
+#   - libfm.a from fmlib build (Phase 2)
+#   - libfmc.a from FMC build (Phase 3)
+#   - libxml2 cross-compiled for arm64 (in sysroot)
+#
+# Copyright 2026 Mono Technologies Inc.
+# SPDX-License-Identifier: BSD-2-Clause
+
+SYSROOT?=	/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+CC?=		cc
+CXX?=		c++
+TARGET?=	--target=aarch64-unknown-freebsd14.3
+
+SRCDIR?=	${MAKEFILE:H}/../vendor/dpa_app
+DPA_APP_DIR?=	${MAKEFILE:H}
+FMLIB_INC?=	${MAKEFILE:H}/../fmlib/include/fmd
+FMLIB_LIB?=	/tmp/fmlib-build
+FMC_INC?=	${MAKEFILE:H}/../fmc/source
+FMC_LIB?=	/tmp/fmc-build
+CDX_INC?=	${MAKEFILE:H}/../vendor/cdx
+
+CFLAGS=		-O2 -pipe -Wall -Wno-unused-variable
+CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
+CFLAGS+=	-DNCSW_LINUX -DLS1043
+CFLAGS+=	-I${FMC_INC}
+CFLAGS+=	-I${FMLIB_INC}
+CFLAGS+=	-I${FMLIB_INC}/Peripherals
+CFLAGS+=	-I${FMLIB_INC}/Peripherals/common
+CFLAGS+=	-I${FMLIB_INC}/integrations
+CFLAGS+=	-I${CDX_INC}
+
+LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
+LDFLAGS+=	-L${FMC_LIB} -L${FMLIB_LIB} -L${SYSROOT}/usr/local/lib
+LIBS=		-lfmc -lfm -lxml2 -lz -lm -lpthread -lc++
+
+PROG=		dpa_app
+OBJS=		main.o dpa.o
+
+all: ${PROG}
+
+main.o: ${SRCDIR}/main.c
+	${CC} ${CFLAGS} -c -o main.o ${SRCDIR}/main.c
+
+dpa.o: ${SRCDIR}/dpa.c
+	${CC} ${CFLAGS} -c -o dpa.o ${SRCDIR}/dpa.c
+
+${PROG}: ${OBJS}
+	${CXX} ${LDFLAGS} -o ${PROG} ${OBJS} ${LIBS}
+
+clean:
+	rm -f ${OBJS} ${PROG}
+
+.PHONY: all clean

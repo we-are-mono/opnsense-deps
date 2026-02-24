@@ -1,0 +1,18 @@
+<cfgdata>
+<config>
+  <!-- Mono Gateway DK port configuration -->
+  <engine name="fm0">
+    <!-- 1G Ethernet ports -->
+    <port type="1G" number="1" policy="cdx_ethport_1_policy" portid="1"/>
+    <port type="1G" number="4" policy="cdx_ethport_4_policy" portid="4"/>
+    <port type="1G" number="5" policy="cdx_ethport_5_policy" portid="5"/>
+    <!-- 10G Ethernet ports -->
+    <port type="10G" number="0" policy="cdx_ethport_6_policy" portid="6"/>
+    <port type="10G" number="1" policy="cdx_ethport_7_policy" portid="7"/>
+    <!-- OFFLINE ports for CDX -->
+    <!-- number="1" -> dpa-fman0-oh@2 (IPsec), number="2" -> dpa-fman0-oh@3 (WiFi) -->
+    <port type="OFFLINE" number="1" policy="cdx_port_of2_policy" portid="8"/>
+    <port type="OFFLINE" number="2" policy="cdx_port_of3_policy" portid="9"/>
+  </engine>
+</config>
+</cfgdata>

@@ -1,0 +1,19 @@
+# Build output directories
+dist/*
+!dist/.keep
+_build/
+
+# Object files and libraries
+*.o
+*.ko
+*.kld
+*.a
+
+# Dependency tracking
+.depend*
+
+# Kernel module build artifacts
+export_syms
+*_if.h
+opt_*.h
+machine

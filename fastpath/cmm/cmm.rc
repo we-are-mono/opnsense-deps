@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# PROVIDE: cmm
+# REQUIRE: NETWORKING pf
+# KEYWORD: shutdown
+#
+# Add the following to /etc/rc.conf to enable CMM:
+#   cmm_enable="YES"
+#
+
+. /etc/rc.subr
+
+name="cmm"
+rcvar="cmm_enable"
+command="/usr/local/sbin/cmm"
+pidfile="/var/run/${name}.pid"
+
+load_rc_config $name
+run_rc_command "$1"

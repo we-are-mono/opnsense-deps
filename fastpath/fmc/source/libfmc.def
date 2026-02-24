@@ -1,0 +1,11 @@
+LIBRARY "libfmc"
+EXPORTS
+    fmc_compile
+    fmc_execute
+    fmc_clean
+    fmc_load
+    fmc_save
+    fmc_release
+    fmc_get_error
+    fmc_log
+    fmc_log_write

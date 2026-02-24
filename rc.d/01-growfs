@@ -1,0 +1,27 @@
+#!/bin/sh
+# OPNsense rc.syshook early script — grow root filesystem to fill disk
+# Installed to /usr/local/etc/rc.syshook.d/early/01-growfs
+#
+# On first boot from a freshly written image, the UFS root partition
+# is only ~5GB.  This expands it to fill the eMMC/SD card.
+# Safe to run repeatedly — gpart resize is a no-op when already full,
+# and growfs is a no-op when the filesystem already fills the partition.
+
+DISK="mmcsd0"
+PART="2"
+LABEL="OPNsense_ARM"
+
+# Only act if the partition device exists
+if [ ! -e "/dev/${DISK}s${PART}" ]; then
+	exit 0
+fi
+
+# Check if there is free space after our partition
+free=$(gpart show "$DISK" 2>/dev/null | grep -c '- free -')
+if [ "$free" -gt 1 ]; then
+	# More than just the initial alignment gap — resize needed
+	echo "growfs: resizing partition ${DISK}s${PART}"
+	gpart resize -i "$PART" "$DISK"
+	growfs -y "/dev/ufs/${LABEL}"
+	echo "growfs: done — $(df -h / | tail -1 | awk '{print $2}') total"
+fi

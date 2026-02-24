@@ -1,0 +1,525 @@
+ <!--NOTE: In soft parser code, pppoe table base is calculated and added as ccbase +0x30 -->
+ <!-- this pppoe relay table is allocated dynamically by FMC while pushing tables from cdx_pcd.xml -->
+ <!-- If any new table gets added ccbase value of ppoe relay table should be checked and updated accordingly -->
+<netpcd>
+<classification name="cdx_udp4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0x7fff" hashshift="0" keysize="14" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_tcp4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0x7fff" hashshift="0" keysize="14" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_udp6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0x7fff" hashshift="0" keysize="38" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_tcp6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0x7fff" hashshift="0" keysize="38" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_esp4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="10" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_esp6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="22" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_multicast4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="10" aging="no"/>
+  </key>
+</classification>
+
+<classification name="cdx_multicast6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="34" aging="no"/>
+  </key>
+</classification>
+
+<classification name="cdx_ethernet_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="15" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_pppoe_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xf" hashshift="0" keysize="11" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_tuple3udp4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="8" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_tuple3tcp4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xf" hashshift="0" keysize="8" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_tuple3udp6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xff" hashshift="0" keysize="20" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_tuple3tcp6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xf" hashshift="0" keysize="20" aging="yes"/>
+  </key>
+</classification>
+
+<classification name="cdx_frag4_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xf" hashshift="0" keysize="12" aging="no"/>
+  </key>
+</classification>
+
+<classification name="cdx_frag6_cc" max="512" masks="yes" shared="true" statistics="byteframe">
+  <key>
+     <hashtable external="yes" mask="0xf" hashshift="0" keysize="38" aging="no"/>
+  </key>
+</classification>
+
+<distribution name="cdx_udp4_dist" shared="true">
+  <protocols>
+    <protocolref name="udp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.src" header_index="last"/>
+    <fieldref name="ipv4.dst" header_index="last"/>
+    <fieldref name="ipv4.nextp" header_index="last"/>
+    <fieldref name="udp.sport"/>
+    <fieldref name="udp.dport"/>
+  </key>
+  <queue count="1" base="0x1000"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_udp4_cc"/>
+</distribution>
+
+<distribution name="cdx_tcp4_dist" shared="true">
+  <protocols>
+    <protocolref name="tcp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.src" header_index="last"/>
+    <fieldref name="ipv4.dst" header_index="last"/>
+    <fieldref name="ipv4.nextp" header_index="last"/>
+    <fieldref name="tcp.sport"/>
+    <fieldref name="tcp.dport"/>
+  </key>
+  <queue count="1" base="0x1010"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_tcp4_cc"/>
+</distribution>
+
+<distribution name="cdx_udp6_dist" shared="true">
+  <protocols>
+    <protocolref name="udp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.src" header_index="last"/>
+    <fieldref name="ipv6.dst" header_index="last"/>
+    <fieldref name="ipv6.nexthdr" header_index="last"/>
+    <fieldref name="udp.sport"/>
+    <fieldref name="udp.dport"/>
+  </key>
+  <queue count="1" base="0x1020"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_udp6_cc"/>
+</distribution>
+
+<distribution name="cdx_tcp6_dist" shared="true">
+  <protocols>
+    <protocolref name="tcp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.src" header_index="last"/>
+    <fieldref name="ipv6.dst" header_index="last"/>
+    <fieldref name="ipv6.nexthdr" header_index="last"/>
+    <fieldref name="tcp.sport"/>
+    <fieldref name="tcp.dport"/>
+  </key>
+  <queue count="1" base="0x1030"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_tcp6_cc"/>
+</distribution>
+
+<distribution name="cdx_ipv4multicast_dist" shared="true">
+  <protocols>
+    <protocolref name="ipv4"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.src"/>
+    <fieldref name="ipv4.dst"/>
+    <fieldref name="ipv4.nextp"/>
+  </key>
+  <queue count="1" base="0x1040"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_multicast4_cc"/>
+</distribution>
+
+<distribution name="cdx_ipv6multicast_dist" shared="true">
+  <protocols>
+    <protocolref name="ipv6"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.src"/>
+    <fieldref name="ipv6.dst"/>
+    <fieldref name="ipv6.nexthdr"/>
+  </key>
+  <queue count="1" base="0x1050"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_multicast6_cc"/>
+</distribution>
+
+<distribution name="cdx_pppoe_dist" shared="true">
+  <protocols>
+    <protocolref name="pppoe"/>
+  </protocols>
+  <key>
+    <fieldref name="ethernet.src"/>
+    <fieldref name="ethernet.type"/>
+    <fieldref name="pppoe.session_ID"/>
+  </key>
+  <action type="classification" name="cdx_pppoe_cc"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <queue count="1" base="0x1080"/>
+</distribution>
+
+<distribution name="cdx_ethernet_dist" shared="true">
+  <protocols>
+    <protocolref name="ethernet"/>
+  </protocols>
+  <key>
+    <fieldref name="ethernet.dst"/>
+    <fieldref name="ethernet.src"/>
+    <fieldref name="ethernet.type"/>
+  </key>
+  <action type="classification" name="cdx_ethernet_cc"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <queue count="128" base="0x10000"/>
+</distribution>
+
+<distribution name="cdx_esp4_dist" shared="true">
+  <protocols>
+    <protocolref name="ipv4"/>
+    <protocolref name="ipsec_esp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.dst"/>
+    <fieldref name="ipv4.nextp"/>
+    <fieldref name="ipsec_esp.spi"/>
+  </key>
+  <queue count="1" base="0x1060"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_esp4_cc"/>
+</distribution>
+
+<distribution name="cdx_esp6_dist" shared="true">
+  <protocols>
+    <protocolref name="ipv6"/>
+    <protocolref name="ipsec_esp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.dst"/>
+    <fieldref name="ipv6.nexthdr"/>
+    <fieldref name="ipsec_esp.spi"/>
+  </key>
+  <queue count="1" base="0x1070"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_esp6_cc"/>
+</distribution>
+
+<distribution name="cdx_tup3udp4_dist" shared="true">
+  <protocols>
+    <protocolref name="udp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.dst" header_index="last"/>
+    <fieldref name="ipv4.nextp" header_index="last"/>
+    <fieldref name="udp.dport"/>
+  </key>
+  <queue count="1" base="0x1090"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_tuple3udp4_cc"/>
+</distribution>
+
+<distribution name="cdx_tup3tcp4_dist" shared="true">
+  <protocols>
+    <protocolref name="tcp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.dst" header_index="last"/>
+    <fieldref name="ipv4.nextp" header_index="last"/>
+    <fieldref name="tcp.dport"/>
+  </key>
+  <queue count="1" base="0x10a0"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_tuple3tcp4_cc"/>
+</distribution>
+
+<distribution name="cdx_tup3udp6_dist" shared="true">
+  <protocols>
+    <protocolref name="udp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.dst" header_index="last"/>
+    <fieldref name="ipv6.nexthdr" header_index="last"/>
+    <fieldref name="udp.dport"/>
+  </key>
+  <queue count="1" base="0x10b0"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_tuple3udp6_cc"/>
+</distribution>
+
+<distribution name="cdx_tup3tcp6_dist" shared="true">
+  <protocols>
+    <protocolref name="tcp"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.dst" header_index="last"/>
+    <fieldref name="ipv6.nexthdr" header_index="last"/>
+    <fieldref name="tcp.dport"/>
+  </key>
+  <queue count="1" base="0x10c0"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_tuple3tcp6_cc"/>
+</distribution>
+
+<distribution name="cdx_ipv4frag_dist" shared="true">
+  <protocols>
+    <protocolref name="ipv4"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv4.src"/>
+    <fieldref name="ipv4.dst"/>
+    <fieldref name="ipv4.nextp"/>
+  </key>
+  <queue count="1" base="0x10d0"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_frag4_cc"/>
+</distribution>
+
+<distribution name="cdx_ipv6frag_dist" shared="true">
+  <protocols>
+    <protocolref name="ipv6"/>
+  </protocols>
+  <key>
+    <fieldref name="ipv6.src"/>
+    <fieldref name="ipv6.dst"/>
+    <fieldref name="ipv6.nexthdr"/>
+  </key>
+  <queue count="1" base="0x10e0"/>
+  <combine portid="true" offset="16" mask="0xF"/>
+  <action type="classification" name="cdx_frag6_cc"/>
+</distribution>
+
+<policy name="cdx_ethport_0_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+
+<policy name="cdx_ethport_1_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/-->
+ </dist_order>
+</policy>
+
+<policy name="cdx_ethport_2_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+
+<policy name="cdx_ethport_3_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+
+<policy name="cdx_ethport_4_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/-->
+  </dist_order>
+</policy>
+
+<policy name="cdx_ethport_5_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+
+<policy name="cdx_ethport_6_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+
+<policy name="cdx_ethport_7_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+
+
+<policy name="cdx_port_of2_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/-->
+  </dist_order>
+</policy>
+
+<policy name="cdx_port_of3_policy">
+  <dist_order>
+    <distributionref name="cdx_esp4_dist"/>
+    <distributionref name="cdx_esp6_dist"/>
+    <distributionref name="cdx_udp4_dist"/>
+    <distributionref name="cdx_tcp4_dist"/>
+    <distributionref name="cdx_udp6_dist"/>
+    <distributionref name="cdx_tcp6_dist"/>
+    <distributionref name="cdx_ipv4multicast_dist"/>
+    <distributionref name="cdx_ipv6multicast_dist"/>
+    <distributionref name="cdx_tup3udp4_dist"/>
+    <distributionref name="cdx_tup3udp6_dist"/>
+    <distributionref name="cdx_pppoe_dist"/>
+    <distributionref name="cdx_ethernet_dist"/>
+    <!-- distributionref name="cdx_ipv4frag_dist"/>
+    <distributionref name="cdx_ipv6frag_dist"/ -->
+  </dist_order>
+</policy>
+</netpcd>

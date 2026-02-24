@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# PROVIDE: cmm
+# REQUIRE: NETWORKING pf dpa_app
+# KEYWORD: shutdown
+#
+# cmm — Connection Management Module.
+# Monitors PF conntrack state changes and offloads flows to CDX
+# via FCI for hardware-accelerated forwarding.
+#
+
+. /etc/rc.subr
+
+name="cmm"
+rcvar="cmm_enable"
+desc="Connection Management Module for CDX offload"
+
+pidfile="/var/run/${name}.pid"
+
+start_cmd="cmm_start"
+stop_cmd="cmm_stop"
+status_cmd="cmm_status"
+
+start_precmd="cmm_prestart"
+
+cmm_prestart()
+{
+	# Verify CDX module is loaded
+	if ! kldstat -q -m cdx; then
+		warn "cdx.ko not loaded — skipping cmm"
+		return 1
+	fi
+
+	# Verify FCI module is loaded
+	if ! kldstat -q -m fci; then
+		warn "fci.ko not loaded — skipping cmm"
+		return 1
+	fi
+}
+
+cmm_start()
+{
+	echo "Starting ${name}."
+	/usr/sbin/daemon -p ${pidfile} -t ${name} \
+	    /usr/local/sbin/cmm -f ${cmm_flags}
+}
+
+cmm_stop()
+{
+	if [ -f ${pidfile} ]; then
+		kill $(cat ${pidfile}) 2>/dev/null
+		rm -f ${pidfile}
+		echo "Stopped ${name}."
+	else
+		echo "${name} is not running."
+	fi
+}
+
+cmm_status()
+{
+	if [ -f ${pidfile} ] && kill -0 $(cat ${pidfile}) 2>/dev/null; then
+		echo "${name} is running as pid $(cat ${pidfile})."
+	else
+		echo "${name} is not running."
+	fi
+}
+
+load_rc_config $name
+
+: ${cmm_enable:="NO"}
+: ${cmm_flags:="-d 1"}
+
+run_rc_command "$1"
