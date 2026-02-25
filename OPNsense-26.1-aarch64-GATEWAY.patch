@@ -1,4 +1,4 @@
-From d8e1e252236b5369402b13b26371d2ecaf46056d Mon Sep 17 00:00:00 2001
+From bec2a6147caf2493f3f060375f1051355378fdb2 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Wed, 25 Feb 2026 21:58:33 +0100
 Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
@@ -81,7 +81,7 @@ Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
  sys/dev/dpaa/if_dtsec.h                       |   36 +-
  sys/dev/dpaa/if_dtsec_fdt.c                   |  123 +-
  sys/dev/dpaa/if_dtsec_im.c                    |    3 +-
- sys/dev/dpaa/if_dtsec_rm.c                    | 1268 +++++++++--
+ sys/dev/dpaa/if_dtsec_rm.c                    | 1296 ++++++++++--
  sys/dev/dpaa/if_dtsec_rm.h                    |    6 +-
  sys/dev/dpaa/memac_mdio.c                     |  328 +++
  sys/dev/dpaa/portals.h                        |    5 +
@@ -110,7 +110,7 @@ Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
  sys/netpfil/pf/pf_ioctl.c                     |    5 +
  sys/sys/random.h                              |    1 +
  sys/sys/systm.h                               |   11 +
- 106 files changed, 23101 insertions(+), 490 deletions(-)
+ 106 files changed, 23126 insertions(+), 493 deletions(-)
  create mode 100644 sys/arm64/conf/GATEWAY
  create mode 100644 sys/arm64/conf/caam/config.caam
  create mode 100644 sys/arm64/conf/caam/files.caam
@@ -19518,7 +19518,7 @@ index fcde0df6030..0cd55dbc7c7 100644
  
  	if ((if_getdrvflags(sc->sc_ifnet) & IFF_DRV_RUNNING) != IFF_DRV_RUNNING)
 diff --git a/sys/dev/dpaa/if_dtsec_rm.c b/sys/dev/dpaa/if_dtsec_rm.c
-index b213a259b5b..486994431a9 100644
+index b213a259b5b..abace4bd6b9 100644
 --- a/sys/dev/dpaa/if_dtsec_rm.c
 +++ b/sys/dev/dpaa/if_dtsec_rm.c
 @@ -36,6 +36,8 @@
@@ -19556,7 +19556,7 @@ index b213a259b5b..486994431a9 100644
  #include "bman.h"
  #include "qman.h"
  #include "if_dtsec.h"
-@@ -69,23 +83,62 @@
+@@ -69,23 +83,57 @@
  #define	DTSEC_BPOOLS_USED	(1)
  #define	DTSEC_MAX_TX_QUEUE_LEN	256
  
@@ -19583,23 +19583,18 @@ index b213a259b5b..486994431a9 100644
 +	DTSEC_RM_POOL_RX_HIGH_MARK	= 2048,
 +	DTSEC_RM_POOL_RX_MAX_SIZE	= 2048,
 +	/*
-+	 * Maximum total buffers allocated from UMA per port.
++	 * Maximum in-flight RX buffers per port.
 +	 *
-+	 * After the BMan/FMan/QMan round-trip, XX_PhysToVirt returns a
-+	 * DMAP address that differs from the original UMA KVA address.
-+	 * Buffers cannot be returned to UMA (address mismatch), so they
-+	 * permanently cycle between BMan and mbufs.  This cap bounds
-+	 * total memory consumption.
++	 * Buffers are freed back to UMA when the mbuf is released
++	 * (consumption model), so this bounds simultaneous allocation,
++	 * not permanent memory commitment.  The original KVA pointer
++	 * is stashed in the buffer's privData area before handing to
++	 * BMan, then recovered via the DMAP address after the hardware
++	 * round-trip to pass back to uma_zfree.
 +	 *
-+	 * With 4-CPU forwarding at 10G, each packet holds an RX buffer
-+	 * through the full RX -> pf/NAT -> routing -> TX -> TX_confirm
-+	 * pipeline.  4096 was too low — caused chronic buffer pool
-+	 * exhaustion (oobd > 800K frames).
-+	 *
-+	 * 16384 × 9664 bytes = ~150 MB per port, ~300 MB for 2 active
-+	 * 10G ports.  Board has 4 GB RAM.
++	 * 4096 × 9664 = ~38 MB peak per port.
 +	 */
-+	DTSEC_RM_POOL_RX_MAX_TOTAL	= 16384,
++	DTSEC_RM_POOL_RX_MAX_TOTAL	= 4096,
 +	/*
 +	 * Active refill threshold: when free buffer count drops below
 +	 * this, the RX callback allocates new buffers.  FMan acquires
@@ -19623,7 +19618,7 @@ index b213a259b5b..486994431a9 100644
  enum dtsec_rm_fqr_params {
  	DTSEC_RM_FQR_RX_WQ		= 1,
  	DTSEC_RM_FQR_TX_WQ		= 1,
-@@ -104,6 +157,8 @@ dtsec_rm_fi_pool_free(struct dtsec_softc *sc)
+@@ -104,6 +152,8 @@ dtsec_rm_fi_pool_free(struct dtsec_softc *sc)
  
  	if (sc->sc_fi_zone != NULL)
  		uma_zdestroy(sc->sc_fi_zone);
@@ -19632,7 +19627,7 @@ index b213a259b5b..486994431a9 100644
  }
  
  int
-@@ -178,13 +233,167 @@ dtsec_rm_fm_port_rx_init(struct dtsec_softc *sc, int unit)
+@@ -178,13 +228,167 @@ dtsec_rm_fm_port_rx_init(struct dtsec_softc *sc, int unit)
  		return (ENXIO);
  	}
  
@@ -19800,7 +19795,7 @@ index b213a259b5b..486994431a9 100644
  	if (bootverbose)
  		device_printf(sc->sc_dev, "RX hw port 0x%02x initialized.\n",
  		    sc->sc_port_rx_hw_id);
-@@ -224,13 +433,57 @@ dtsec_rm_fm_port_tx_init(struct dtsec_softc *sc, int unit)
+@@ -224,13 +428,57 @@ dtsec_rm_fm_port_tx_init(struct dtsec_softc *sc, int unit)
  		return (ENXIO);
  	}
  
@@ -19858,7 +19853,54 @@ index b213a259b5b..486994431a9 100644
  	if (bootverbose)
  		device_printf(sc->sc_dev, "TX hw port 0x%02x initialized.\n",
  		    sc->sc_port_tx_hw_id);
-@@ -268,23 +521,58 @@ dtsec_rm_pool_rx_get_buffer(t_Handle h_BufferPool, t_Handle *context)
+@@ -244,6 +492,31 @@ dtsec_rm_fm_port_tx_init(struct dtsec_softc *sc, int unit)
+  * @group dTSEC buffer pools routines.
+  * @{
+  */
++
++/*
++ * Store the original KVA pointer from uma_zalloc in the buffer's
++ * private data area (first 8 bytes).  FMan never touches privData
++ * (privDataSize=16), so this survives the BMan/FMan/QMan round-trip.
++ *
++ * After the round-trip, XX_PhysToVirt returns a DMAP address — a
++ * different virtual address for the same physical memory.  We read
++ * back the original KVA pointer via the DMAP mapping to pass to
++ * uma_zfree, which requires the exact address it originally returned.
++ */
++static inline void
++dtsec_rm_buf_stash_ptr(void *buf)
++{
++
++	*(uintptr_t *)buf = (uintptr_t)buf;
++}
++
++static inline void *
++dtsec_rm_buf_recover_ptr(void *buf)
++{
++
++	return ((void *)(*(uintptr_t *)buf));
++}
++
+ static t_Error
+ dtsec_rm_pool_rx_put_buffer(t_Handle h_BufferPool, uint8_t *buffer,
+     t_Handle context)
+@@ -251,7 +524,7 @@ dtsec_rm_pool_rx_put_buffer(t_Handle h_BufferPool, uint8_t *buffer,
+ 	struct dtsec_softc *sc;
+ 
+ 	sc = h_BufferPool;
+-	uma_zfree(sc->sc_rx_zone, buffer);
++	uma_zfree(sc->sc_rx_zone, dtsec_rm_buf_recover_ptr(buffer));
+ 
+ 	return (E_OK);
+ }
+@@ -264,27 +537,65 @@ dtsec_rm_pool_rx_get_buffer(t_Handle h_BufferPool, t_Handle *context)
+ 
+ 	sc = h_BufferPool;
+ 	buffer = uma_zalloc(sc->sc_rx_zone, M_NOWAIT);
++	if (buffer != NULL)
++		dtsec_rm_buf_stash_ptr(buffer);
+ 
  	return (buffer);
  }
  
@@ -19881,6 +19923,7 @@ index b213a259b5b..486994431a9 100644
 +		buf = uma_zalloc(sc->sc_rx_zone, M_NOWAIT);
 +		if (buf == NULL)
 +			break;
++		dtsec_rm_buf_stash_ptr(buf);
 +		if (bman_put_buffer(sc->sc_rx_pool, buf) != 0) {
 +			uma_zfree(sc->sc_rx_zone, buf);
 +			break;
@@ -19923,7 +19966,7 @@ index b213a259b5b..486994431a9 100644
  	}
  }
  
-@@ -303,14 +591,11 @@ int
+@@ -303,14 +614,11 @@ int
  dtsec_rm_pool_rx_init(struct dtsec_softc *sc)
  {
  
@@ -19939,7 +19982,7 @@ index b213a259b5b..486994431a9 100644
  
  	sc->sc_rx_pool = bman_pool_create(&sc->sc_rx_bpid, FM_PORT_BUFFER_SIZE,
  	    0, 0, DTSEC_RM_POOL_RX_MAX_SIZE, dtsec_rm_pool_rx_get_buffer,
-@@ -323,6 +608,8 @@ dtsec_rm_pool_rx_init(struct dtsec_softc *sc)
+@@ -323,6 +631,8 @@ dtsec_rm_pool_rx_init(struct dtsec_softc *sc)
  		return (EIO);
  	}
  
@@ -19948,7 +19991,13 @@ index b213a259b5b..486994431a9 100644
  	return (0);
  }
  /** @} */
-@@ -340,10 +627,21 @@ dtsec_rm_fqr_mext_free(struct mbuf *m)
+@@ -335,15 +645,21 @@ dtsec_rm_pool_rx_init(struct dtsec_softc *sc)
+ static void
+ dtsec_rm_fqr_mext_free(struct mbuf *m)
+ {
+-	struct dtsec_softc *sc;
+ 	void *buffer;
++	struct dtsec_softc *sc;
  
  	buffer = m->m_ext.ext_arg1;
  	sc = m->m_ext.ext_arg2;
@@ -19958,23 +20007,18 @@ index b213a259b5b..486994431a9 100644
 -		dtsec_rm_pool_rx_put_buffer(sc, buffer, NULL);
 +
 +	/*
-+	 * Always return buffers to BMan, never to UMA.
-+	 *
-+	 * After the BMan/FMan/QMan round-trip, XX_PhysToVirt returns
-+	 * the DMAP virtual address for the buffer, which differs from
-+	 * the original KVA address that uma_zalloc returned.  Calling
-+	 * uma_zfree with the DMAP address corrupts UMA slab tracking
-+	 * and leads to use-after-free panics.
-+	 *
-+	 * With the 16 MB FBPR (no-map reserved memory), the pool can
-+	 * hold far more entries than we'll ever need, so there is no
-+	 * reason to cap the pool at POOL_RX_MAX_SIZE.
++	 * Consumption model: free the buffer back to UMA using the
++	 * original KVA pointer stashed in the privData area.  The
++	 * buffer address here is a DMAP address (from XX_PhysToVirt),
++	 * but the stashed pointer at offset 0 is the original KVA
++	 * address that uma_zalloc returned.
 +	 */
-+	bman_put_buffer(sc->sc_rx_pool, buffer);
++	uma_zfree(sc->sc_rx_zone, dtsec_rm_buf_recover_ptr(buffer));
++	atomic_subtract_32(&sc->sc_rx_buf_total, 1);
  }
  
  static e_RxStoreResponse
-@@ -357,20 +655,66 @@ dtsec_rm_fqr_rx_callback(t_Handle app, t_Handle fqr, t_Handle portal,
+@@ -357,20 +673,66 @@ dtsec_rm_fqr_rx_callback(t_Handle app, t_Handle fqr, t_Handle portal,
  	m = NULL;
  	sc = app;
  
@@ -20051,7 +20095,7 @@ index b213a259b5b..486994431a9 100644
  	m = m_gethdr(M_NOWAIT, MT_HEADER);
  	if (m == NULL)
  		goto err;
-@@ -380,14 +724,64 @@ dtsec_rm_fqr_rx_callback(t_Handle app, t_Handle fqr, t_Handle portal,
+@@ -380,15 +742,69 @@ dtsec_rm_fqr_rx_callback(t_Handle app, t_Handle fqr, t_Handle portal,
  	    EXT_NET_DRV);
  
  	m->m_pkthdr.rcvif = sc->sc_ifnet;
@@ -20113,11 +20157,17 @@ index b213a259b5b..486994431a9 100644
  	return (e_RX_STORE_RESPONSE_CONTINUE);
  
  err:
+-	bman_put_buffer(sc->sc_rx_pool, frame_va);
 +	if_inc_counter(sc->sc_ifnet, IFCOUNTER_IERRORS, 1);
- 	bman_put_buffer(sc->sc_rx_pool, frame_va);
++	if (frame_va != NULL) {
++		uma_zfree(sc->sc_rx_zone,
++		    dtsec_rm_buf_recover_ptr(frame_va));
++		atomic_subtract_32(&sc->sc_rx_buf_total, 1);
++	}
  	if (m != NULL)
  		m_freem(m);
-@@ -401,49 +795,93 @@ dtsec_rm_fqr_tx_confirm_callback(t_Handle app, t_Handle fqr, t_Handle portal,
+ 
+@@ -401,49 +817,93 @@ dtsec_rm_fqr_tx_confirm_callback(t_Handle app, t_Handle fqr, t_Handle portal,
  {
  	struct dtsec_rm_frame_info *fi;
  	struct dtsec_softc *sc;
@@ -20212,13 +20262,13 @@ index b213a259b5b..486994431a9 100644
 +	device_t dev;
 +	struct dtsec_softc *sc;
 +	int i, unit;
- 
--	if (sc->sc_rx_fqr)
--		qman_fqr_free(sc->sc_rx_fqr);
++
 +	dc = devclass_find("dtsec");
 +	if (dc == NULL)
 +		return;
-+
+ 
+-	if (sc->sc_rx_fqr)
+-		qman_fqr_free(sc->sc_rx_fqr);
 +	for (unit = 0; unit < devclass_get_maxunit(dc); unit++) {
 +		dev = devclass_get_device(dc, unit);
 +		if (dev == NULL)
@@ -20239,16 +20289,13 @@ index b213a259b5b..486994431a9 100644
  }
  
  int
-@@ -451,17 +889,103 @@ dtsec_rm_fqr_rx_init(struct dtsec_softc *sc)
+@@ -451,17 +911,103 @@ dtsec_rm_fqr_rx_init(struct dtsec_softc *sc)
  {
  	t_Error error;
  	t_Handle fqr;
 +	uint32_t base_fqid;
 +	int i;
- 
--	/* Default Frame Queue */
--	fqr = qman_fqr_create(1, DTSEC_RM_FQR_RX_CHANNEL, DTSEC_RM_FQR_RX_WQ,
--	    false, 0, false, false, true, false, 0, 0, 0);
++
 +#ifdef __aarch64__
 +	/*
 +	 * RSS via per-CPU dedicated QMan channels (matching Linux).
@@ -20273,9 +20320,7 @@ index b213a259b5b..486994431a9 100644
 +	    DTSEC_RM_FQR_RX_WQ, false,
 +	    DTSEC_RX_QUEUES,  /* alignment */
 +	    false, false, true, false, 0, 0, 0);
- 	if (fqr == NULL) {
--		device_printf(sc->sc_dev, "could not create default RX queue"
--		    "\n");
++	if (fqr == NULL) {
 +		device_printf(sc->sc_dev,
 +		    "could not create aligned RX FQR for FQID 0\n");
 +		return (EIO);
@@ -20284,17 +20329,19 @@ index b213a259b5b..486994431a9 100644
 +	sc->sc_rx_fqr[0] = fqr;
 +	base_fqid = qman_fqr_get_base_fqid(fqr);
 +	sc->sc_rx_fqid = base_fqid;
-+
+ 
+-	/* Default Frame Queue */
+-	fqr = qman_fqr_create(1, DTSEC_RM_FQR_RX_CHANNEL, DTSEC_RM_FQR_RX_WQ,
+-	    false, 0, false, false, true, false, 0, 0, 0);
 +	error = qman_fqr_register_cb(fqr, dtsec_rm_fqr_rx_callback, sc);
 +	if (error != E_OK) {
 +		device_printf(sc->sc_dev,
 +		    "could not register RX callback for FQID 0\n");
 +		qman_fqr_free(fqr);
 +		sc->sc_rx_fqr[0] = NULL;
- 		return (EIO);
- 	}
- 
--	sc->sc_rx_fqr = fqr;
++		return (EIO);
++	}
++
 +	/* FQIDs 1..N-1: force-allocate, round-robin across CPUs */
 +	for (i = 1; i < DTSEC_RX_QUEUES; i++) {
 +		e_QmFQChannel channel =
@@ -20340,16 +20387,19 @@ index b213a259b5b..486994431a9 100644
 +	    DTSEC_RM_FQR_RX_WQ, false,
 +	    DTSEC_RX_QUEUES > 1 ? DTSEC_RX_QUEUES : 0,
 +	    false, false, true, false, 0, 0, 0);
-+	if (fqr == NULL) {
+ 	if (fqr == NULL) {
+-		device_printf(sc->sc_dev, "could not create default RX queue"
+-		    "\n");
 +		device_printf(sc->sc_dev, "could not create RX queue range\n");
-+		return (EIO);
-+	}
-+
+ 		return (EIO);
+ 	}
+ 
+-	sc->sc_rx_fqr = fqr;
 +	sc->sc_rx_fqr[0] = fqr;
  	sc->sc_rx_fqid = qman_fqr_get_base_fqid(fqr);
  
  	error = qman_fqr_register_cb(fqr, dtsec_rm_fqr_rx_callback, sc);
-@@ -471,18 +995,30 @@ dtsec_rm_fqr_rx_init(struct dtsec_softc *sc)
+@@ -471,18 +1017,30 @@ dtsec_rm_fqr_rx_init(struct dtsec_softc *sc)
  		return (EIO);
  	}
  
@@ -20383,7 +20433,7 @@ index b213a259b5b..486994431a9 100644
  }
  
  int
-@@ -490,19 +1026,24 @@ dtsec_rm_fqr_tx_init(struct dtsec_softc *sc)
+@@ -490,19 +1048,24 @@ dtsec_rm_fqr_tx_init(struct dtsec_softc *sc)
  {
  	t_Error error;
  	t_Handle fqr;
@@ -20419,7 +20469,7 @@ index b213a259b5b..486994431a9 100644
  	fqr = qman_fqr_create(1, DTSEC_RM_FQR_TX_CONF_CHANNEL,
  	    DTSEC_RM_FQR_TX_CONF_WQ, false, 0, false, false, true, false, 0, 0,
  	    0);
-@@ -524,129 +1065,554 @@ dtsec_rm_fqr_tx_init(struct dtsec_softc *sc)
+@@ -524,129 +1087,554 @@ dtsec_rm_fqr_tx_init(struct dtsec_softc *sc)
  		return (EIO);
  	}
  
@@ -20831,7 +20881,7 @@ index b213a259b5b..486994431a9 100644
 +			return (ENOBUFS);
  		}
 +		memset(sgt_buf, 0, sc->sc_sgt_buf_size);
-+
+ 
 +		/* Store fi pointer in private data area (offset 0) */
 +		*(struct dtsec_rm_frame_info **)sgt_buf = fi;
 +
@@ -20840,7 +20890,7 @@ index b213a259b5b..486994431a9 100644
 +		    sc->sc_txph, (char *)sgt_buf);
 +		if (buf_prs != NULL)
 +			memcpy(buf_prs, &prs, sizeof(prs));
- 
++
 +		/* Build SG entries at sgt_buf + tx_data_offset */
 +		sgt = (t_DpaaSGTE *)((char *)sgt_buf +
 +		    sc->sc_tx_data_offset);
@@ -20922,12 +20972,12 @@ index b213a259b5b..486994431a9 100644
  		}
  
 -		DPAA_SGTE_SET_FINAL(&fi->fi_sgt[i-1], 1);
--
++		DPAA_SGTE_SET_FINAL(&sgt[i - 1], 1);
+ 
 -		DPAA_FD_SET_ADDR(&fd, fi->fi_sgt);
 -		DPAA_FD_SET_LENGTH(&fd, psize);
 -		DPAA_FD_SET_FORMAT(&fd, e_DPAA_FD_FORMAT_TYPE_SHORT_MBSF);
-+		DPAA_SGTE_SET_FINAL(&sgt[i - 1], 1);
- 
+-
 -		fd.liodn = 0;
 -		fd.bpid = 0;
 -		fd.elion = 0;
@@ -20955,15 +21005,14 @@ index b213a259b5b..486994431a9 100644
  			dtsec_rm_fi_free(sc, fi);
  			m_freem(m0);
 +			return (EIO);
- 		}
--		DTSEC_LOCK(sc);
++		}
 +
 +		atomic_add_int(&sc->sc_tx_inflight[cpu], 1);
 +		sched_unpin();
 +		if_inc_counter(ifp, IFCOUNTER_OPACKETS, 1);
 +		if_inc_counter(ifp, IFCOUNTER_OBYTES, psize);
 +		return (0);
- 	}
++	}
 +tx_sg_path:
 +
 +	/*
@@ -21008,11 +21057,12 @@ index b213a259b5b..486994431a9 100644
 +			vaddr += ssize;
 +			psize += ssize;
 +			i++;
-+		}
+ 		}
+-		DTSEC_LOCK(sc);
 +
 +		if (dsize > 0)
 +			break;
-+	}
+ 	}
 +
 +	/* Check if SG table was constructed properly */
 +	if (m != NULL || psize == 0) {
