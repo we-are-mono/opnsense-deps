@@ -17,7 +17,7 @@ if [ ! -e "/dev/${DISK}s${PART}" ]; then
 fi
 
 # Check if there is free space after our partition
-free=$(gpart show "$DISK" 2>/dev/null | grep -c '- free -')
+free=$(gpart show "$DISK" 2>/dev/null | grep -c -- '- free -')
 if [ "$free" -gt 1 ]; then
 	# More than just the initial alignment gap — resize needed
 	echo "growfs: resizing partition ${DISK}s${PART}"
