@@ -1,6 +1,6 @@
-From 7f7033d3ae437fa667a2044b5a82c8499e85800a Mon Sep 17 00:00:00 2001
+From d8e1e252236b5369402b13b26371d2ecaf46056d Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
-Date: Wed, 25 Feb 2026 14:41:14 +0100
+Date: Wed, 25 Feb 2026 21:58:33 +0100
 Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
 
 ---
@@ -33,7 +33,7 @@ Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
  .../ncsw/Peripherals/FM/inc/fm_common.h       |    9 +-
  sys/contrib/ncsw/Peripherals/QM/qm.c          |  118 +-
  sys/contrib/ncsw/Peripherals/QM/qm.h          |   12 +-
- .../ncsw/Peripherals/QM/qm_portal_fqr.c       |  482 ++++-
+ .../ncsw/Peripherals/QM/qm_portal_fqr.c       |  508 ++++-
  sys/contrib/ncsw/Peripherals/QM/qman_low.h    |   53 +-
  .../ncsw/Peripherals/QM/qman_private.h        |   35 +
  sys/contrib/ncsw/build/dflags_arm64.h         |   86 +
@@ -50,7 +50,7 @@ Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
  sys/contrib/ncsw/inc/integrations/part_ext.h  |    6 +
  sys/contrib/ncsw/inc/types_freebsd.h          |   23 +-
  sys/contrib/ncsw/user/env/core_arm64.c        |   60 +
- sys/contrib/ncsw/user/env/xx_arm64.c          |  891 ++++++++
+ sys/contrib/ncsw/user/env/xx_arm64.c          |  794 +++++++
  sys/dev/caam/caam.c                           |  858 ++++++++
  sys/dev/caam/caam.h                           |  128 ++
  sys/dev/caam/caam_alg.c                       | 1183 +++++++++++
@@ -110,7 +110,7 @@ Subject: [PATCH] Port Mono Gateway (NXP LS1046A) to OPNsense's FreeBSD 14.3
  sys/netpfil/pf/pf_ioctl.c                     |    5 +
  sys/sys/random.h                              |    1 +
  sys/sys/systm.h                               |   11 +
- 106 files changed, 23172 insertions(+), 490 deletions(-)
+ 106 files changed, 23101 insertions(+), 490 deletions(-)
  create mode 100644 sys/arm64/conf/GATEWAY
  create mode 100644 sys/arm64/conf/caam/config.caam
  create mode 100644 sys/arm64/conf/caam/files.caam
@@ -3917,7 +3917,7 @@ index a004dc55a67..a18ada7c719 100644
      t_QmExceptionsCallback      *f_Exception;
      t_Handle                    h_App;
 diff --git a/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c b/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c
-index 31313d37f97..11456d2d9dc 100644
+index 31313d37f97..706eeb5bfd0 100644
 --- a/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c
 +++ b/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c
 @@ -1,6 +1,6 @@
@@ -3928,31 +3928,56 @@ index 31313d37f97..11456d2d9dc 100644
   All rights reserved.
  
   This is proprietary source code of Freescale Semiconductor Inc.,
-@@ -64,22 +64,44 @@
+@@ -64,22 +64,69 @@
   * call.  Take advantage of this fact to shove a 64-bit kernel pointer into a
   * 32-bit context integer, and back.
   *
 - * XXX: This depends on the fact that VM_MAX_KERNEL_ADDRESS is less than 38-bit
 - * count from VM_MIN_KERNEL_ADDRESS.  If this ever changes, this needs to be
 - * updated.
-+ * On ARM64, XX_MallocSmart allocates from contigmalloc which returns kernel
-+ * VA addresses (0xffff0000...), NOT DMAP addresses.  We encode kernel-VA-
-+ * relative offsets (shifted by 7 for 128-byte alignment) into the 32-bit
-+ * contextB field.  Max encodable range: 512GB from VM_MIN_KERNEL_ADDRESS.
-+ * contigmalloc returns page-aligned (4096-byte) memory, so 128-byte
-+ * alignment is always satisfied.
++ * On ARM64, encode the physical address shifted by 6 (64-byte alignment).
++ * XX_MallocSmart uses malloc() which returns DMAP addresses — virtual
++ * address encoding is not feasible because the DMAP-to-KVA offset exceeds
++ * 32 bits.  Physical addresses on LS1046A are ≤10GB, so shifted by 6 they
++ * fit trivially in 32 bits (max ~160M).  Reconstruction uses XX_PhysToVirt
++ * which returns the DMAP virtual address.
 + *
 + * On PowerPC, shift by 3 (8-byte alignment) relative to VM_MIN_KERNEL_ADDRESS.
   */
 +#if defined(__aarch64__)
-+CTASSERT((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) <= (1ULL << (32 + 7)));
-+#define	QMAN_CTX_SHIFT	7
-+#define	QMAN_CTX_BASE	VM_MIN_KERNEL_ADDRESS
++#define	QMAN_CTX_SHIFT	6
++static inline uint32_t
++aligned_int_from_ptr(const void *p)
++{
++	physAddress_t pa;
++	uint32_t result;
++
++	pa = XX_VirtToPhys((void *)(uintptr_t)p);
++	KASSERT((pa & ((1 << QMAN_CTX_SHIFT) - 1)) == 0,
++	    ("Pointer %p (pa %#lx) is not %d-byte aligned!\n",
++	    p, (unsigned long)pa, 1 << QMAN_CTX_SHIFT));
++
++	result = (uint32_t)(pa >> QMAN_CTX_SHIFT);
++	KASSERT((physAddress_t)result == (pa >> QMAN_CTX_SHIFT),
++	    ("%s: %p (pa %#lx) overflows 32-bit context\n",
++	    __func__, p, (unsigned long)pa));
++
++	return (result);
++}
++
++static inline void *
++ptr_from_aligned_int(uint32_t ctx)
++{
++	physAddress_t pa;
++
++	pa = (physAddress_t)ctx << QMAN_CTX_SHIFT;
++
++	return (XX_PhysToVirt(pa));
++}
 +#else
  CTASSERT((VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) < (1ULL << 35));
 +#define	QMAN_CTX_SHIFT	3
 +#define	QMAN_CTX_BASE	VM_MIN_KERNEL_ADDRESS
-+#endif
  static inline uint32_t
  aligned_int_from_ptr(const void *p)
  {
@@ -3981,7 +4006,7 @@ index 31313d37f97..11456d2d9dc 100644
  }
  
  static inline void *
-@@ -88,11 +110,59 @@ ptr_from_aligned_int(uint32_t ctx)
+@@ -88,10 +135,59 @@ ptr_from_aligned_int(uint32_t ctx)
  	uintptr_t p;
  
  	p = ctx;
@@ -3990,7 +4015,8 @@ index 31313d37f97..11456d2d9dc 100644
  
  	return ((void *)p);
  }
- 
++#endif
++
 +/*
 + * Copy a frame descriptor from CE portal memory (big-endian) to a native
 + * t_DpaaFD struct with proper byte-swapping.  On big-endian (PowerPC),
@@ -4038,11 +4064,10 @@ index 31313d37f97..11456d2d9dc 100644
 +	WRITE_UINT32(d[2], s[2]);
 +	WRITE_UINT32(d[3], s[3]);
 +}
-+
+ 
  static t_Error qman_volatile_dequeue(t_QmPortal     *p_QmPortal,
                                       struct qman_fq *p_Fq,
-                                      uint32_t       vdqcr)
-@@ -152,7 +222,7 @@ static t_Error qman_create_fq(t_QmPortal        *p_QmPortal,
+@@ -152,7 +248,7 @@ static t_Error qman_create_fq(t_QmPortal        *p_QmPortal,
      /* Everything else is RECOVER support */
      NCSW_PLOCK(p_QmPortal);
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4051,7 +4076,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal, QM_MCC_VERB_QUERYFQ);
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
      ASSERT_COND((p_Mcr->verb & QM_MCR_VERB_MASK) == QM_MCC_VERB_QUERYFQ);
-@@ -162,7 +232,7 @@ static t_Error qman_create_fq(t_QmPortal        *p_QmPortal,
+@@ -162,7 +258,7 @@ static t_Error qman_create_fq(t_QmPortal        *p_QmPortal,
      }
      fqd = p_Mcr->queryfq.fqd;
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4060,7 +4085,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal, QM_MCC_VERB_QUERYFQ_NP);
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
      ASSERT_COND((p_Mcr->verb & QM_MCR_VERB_MASK) == QM_MCC_VERB_QUERYFQ_NP);
-@@ -245,7 +315,56 @@ static t_Error qman_init_fq(t_QmPortal          *p_QmPortal,
+@@ -245,7 +341,56 @@ static t_Error qman_init_fq(t_QmPortal          *p_QmPortal,
          return ERROR_CODE(E_BUSY);
      }
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4117,7 +4142,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal, myverb);
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
      ASSERT_COND((p_Mcr->verb & QM_MCR_VERB_MASK) == myverb);
-@@ -253,17 +372,19 @@ static t_Error qman_init_fq(t_QmPortal          *p_QmPortal,
+@@ -253,17 +398,19 @@ static t_Error qman_init_fq(t_QmPortal          *p_QmPortal,
      if (res != QM_MCR_RESULT_OK) {
          FQUNLOCK(p_Fq);
          PUNLOCK(p_QmPortal);
@@ -4142,7 +4167,7 @@ index 31313d37f97..11456d2d9dc 100644
      p_Fq->state = (flags & QMAN_INITFQ_FLAG_SCHED) ?
              qman_fq_state_sched : qman_fq_state_parked;
      FQUNLOCK(p_Fq);
-@@ -296,9 +417,9 @@ static t_Error qman_retire_fq(t_QmPortal        *p_QmPortal,
+@@ -296,9 +443,9 @@ static t_Error qman_retire_fq(t_QmPortal        *p_QmPortal,
          goto out;
      }
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4154,7 +4179,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal,
                   (uint8_t)((drain)?QM_MCC_VERB_ALTER_RETIRE_CTXB:QM_MCC_VERB_ALTER_RETIRE));
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
-@@ -347,7 +468,7 @@ static t_Error qman_oos_fq(t_QmPortal *p_QmPortal, struct qman_fq *p_Fq)
+@@ -347,7 +494,7 @@ static t_Error qman_oos_fq(t_QmPortal *p_QmPortal, struct qman_fq *p_Fq)
          return ERROR_CODE(E_BUSY);
      }
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4163,7 +4188,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal, QM_MCC_VERB_ALTER_OOS);
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
      ASSERT_COND((p_Mcr->verb & QM_MCR_VERB_MASK) == QM_MCR_VERB_ALTER_OOS);
-@@ -383,7 +504,7 @@ static t_Error qman_schedule_fq(t_QmPortal *p_QmPortal, struct qman_fq *p_Fq)
+@@ -383,7 +530,7 @@ static t_Error qman_schedule_fq(t_QmPortal *p_QmPortal, struct qman_fq *p_Fq)
          return ERROR_CODE(E_BUSY);
      }
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4172,7 +4197,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal, QM_MCC_VERB_ALTER_SCHED);
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
      ASSERT_COND((p_Mcr->verb & QM_MCR_VERB_MASK) == QM_MCR_VERB_ALTER_SCHED);
-@@ -607,14 +728,30 @@ static uint32_t LoopMessageRing(t_QmPortal *p_QmPortal, uint32_t is)
+@@ -607,14 +754,30 @@ static uint32_t LoopMessageRing(t_QmPortal *p_QmPortal, uint32_t is)
          qmPortalMrPvbUpdate(p_QmPortal->p_LowQmPortal);
          p_Msg = qm_mr_current(p_QmPortal->p_LowQmPortal);
          if (p_Msg) {
@@ -4205,7 +4230,7 @@ index 31313d37f97..11456d2d9dc 100644
                  switch(p_Msg->ern.rc)
                  {
                      case(QM_MR_RC_CGR_TAILDROP):
-@@ -635,11 +772,17 @@ static uint32_t LoopMessageRing(t_QmPortal *p_QmPortal, uint32_t is)
+@@ -635,11 +798,17 @@ static uint32_t LoopMessageRing(t_QmPortal *p_QmPortal, uint32_t is)
                          REPORT_ERROR(MINOR, E_NOT_SUPPORTED, ("Unknown rejection code"));
                  }
                  if (!p_FqErn)
@@ -4225,7 +4250,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (!p_FqErn)
                      p_QmPortal->p_NullCB->dc_ern(NULL, p_QmPortal, NULL, p_Msg);
                  else
-@@ -676,6 +819,7 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
+@@ -676,6 +845,7 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
      e_RxStoreResponse           tmpRes;
      t_QmPortal                  *p_QmPortal = (t_QmPortal *)h_QmPortal;
      int                         prefetch = !(p_QmPortal->options & QMAN_PORTAL_FLAG_RSTASH);
@@ -4233,7 +4258,7 @@ index 31313d37f97..11456d2d9dc 100644
  
      while (res != qman_cb_dqrr_pause)
      {
-@@ -685,12 +829,13 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
+@@ -685,12 +855,13 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
          p_Dq = qm_dqrr_current(p_QmPortal->p_LowQmPortal);
          if (!p_Dq)
              break;
@@ -4249,7 +4274,7 @@ index 31313d37f97..11456d2d9dc 100644
              if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                  res = qman_cb_dqrr_pause;
              /* Check for VDQCR completion */
-@@ -706,14 +851,14 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
+@@ -706,14 +877,14 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
          {
              /* Interpret 'dq' from the owner's perspective. */
              /* use portal default handlers */
@@ -4266,7 +4291,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                      res = qman_cb_dqrr_pause;
                  else if (p_Fq->state == qman_fq_state_waiting_parked)
-@@ -724,8 +869,8 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
+@@ -724,8 +895,8 @@ static void LoopDequeueRing(t_Handle h_QmPortal)
                  tmpRes = p_QmPortal->p_NullCB->dqrr(p_QmPortal->h_App,
                                                      NULL,
                                                      p_QmPortal,
@@ -4277,7 +4302,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                      res = qman_cb_dqrr_pause;
              }
-@@ -760,6 +905,7 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
+@@ -760,6 +931,7 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
      enum qman_cb_dqrr_result    res = qman_cb_dqrr_consume;
      e_RxStoreResponse           tmpRes;
      t_QmPortal                  *p_QmPortal = (t_QmPortal *)h_QmPortal;
@@ -4285,7 +4310,7 @@ index 31313d37f97..11456d2d9dc 100644
  
      while (res != qman_cb_dqrr_pause)
      {
-@@ -767,12 +913,13 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
+@@ -767,12 +939,13 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
          p_Dq = qm_dqrr_current(p_QmPortal->p_LowQmPortal);
          if (!p_Dq)
              break;
@@ -4301,7 +4326,7 @@ index 31313d37f97..11456d2d9dc 100644
              if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                  res = qman_cb_dqrr_pause;
              /* Check for VDQCR completion */
-@@ -788,14 +935,14 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
+@@ -788,14 +961,14 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
          {
              /* Interpret 'dq' from the owner's perspective. */
              /* use portal default handlers */
@@ -4318,7 +4343,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                      res = qman_cb_dqrr_pause;
                  else if (p_Fq->state == qman_fq_state_waiting_parked)
-@@ -806,8 +953,8 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
+@@ -806,8 +979,8 @@ static void LoopDequeueRingDcaOptimized(t_Handle h_QmPortal)
                  tmpRes = p_QmPortal->p_NullCB->dqrr(p_QmPortal->h_App,
                                                      NULL,
                                                      p_QmPortal,
@@ -4329,7 +4354,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                      res = qman_cb_dqrr_pause;
              }
-@@ -834,6 +981,7 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
+@@ -834,6 +1007,7 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
      enum qman_cb_dqrr_result    res = qman_cb_dqrr_consume;
      e_RxStoreResponse           tmpRes;
      t_QmPortal                  *p_QmPortal = (t_QmPortal *)h_QmPortal;
@@ -4337,7 +4362,7 @@ index 31313d37f97..11456d2d9dc 100644
  
      while (res != qman_cb_dqrr_pause)
      {
-@@ -841,12 +989,13 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
+@@ -841,12 +1015,13 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
          p_Dq = qm_dqrr_current(p_QmPortal->p_LowQmPortal);
          if (!p_Dq)
              break;
@@ -4353,7 +4378,7 @@ index 31313d37f97..11456d2d9dc 100644
              if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                  res = qman_cb_dqrr_pause;
              /* Check for VDQCR completion */
-@@ -862,14 +1011,14 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
+@@ -862,14 +1037,14 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
          {
              /* Interpret 'dq' from the owner's perspective. */
              /* use portal default handlers */
@@ -4370,7 +4395,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                      res = qman_cb_dqrr_pause;
                  else if (p_Fq->state == qman_fq_state_waiting_parked)
-@@ -880,8 +1029,8 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
+@@ -880,8 +1055,8 @@ static void LoopDequeueRingOptimized(t_Handle h_QmPortal)
                  tmpRes = p_QmPortal->p_NullCB->dqrr(p_QmPortal->h_App,
                                                      NULL,
                                                      p_QmPortal,
@@ -4381,7 +4406,7 @@ index 31313d37f97..11456d2d9dc 100644
                  if (tmpRes == e_RX_STORE_RESPONSE_PAUSE)
                      res = qman_cb_dqrr_pause;
              }
-@@ -909,6 +1058,26 @@ static void portal_isr(void *ptr)
+@@ -909,6 +1084,26 @@ static void portal_isr(void *ptr)
  
      DBG(TRACE, ("software-portal %d got interrupt", p_QmPortal->p_LowQmPortal->config.cpu));
  
@@ -4408,7 +4433,7 @@ index 31313d37f97..11456d2d9dc 100644
      event |= (qm_isr_status_read(p_QmPortal->p_LowQmPortal) &
              enableEvents);
  
-@@ -930,7 +1099,7 @@ static t_Error qman_query_fq_np(t_QmPortal *p_QmPortal, struct qman_fq *p_Fq, st
+@@ -930,7 +1125,7 @@ static t_Error qman_query_fq_np(t_QmPortal *p_QmPortal, struct qman_fq *p_Fq, st
  
      NCSW_PLOCK(p_QmPortal);
      p_Mcc = qm_mc_start(p_QmPortal->p_LowQmPortal);
@@ -4417,7 +4442,7 @@ index 31313d37f97..11456d2d9dc 100644
      qm_mc_commit(p_QmPortal->p_LowQmPortal, QM_MCC_VERB_QUERYFQ_NP);
      while (!(p_Mcr = qm_mc_result(p_QmPortal->p_LowQmPortal))) ;
      ASSERT_COND((p_Mcr->verb & QM_MCR_VERB_MASK) == QM_MCR_VERB_QUERYFQ_NP);
-@@ -1198,6 +1367,105 @@ static void clean_dqrr_mr(t_QmPortal *p_QmPortal)
+@@ -1198,6 +1393,105 @@ static void clean_dqrr_mr(t_QmPortal *p_QmPortal)
      }
  }
  
@@ -4523,7 +4548,7 @@ index 31313d37f97..11456d2d9dc 100644
  static t_Error qman_create_portal(t_QmPortal *p_QmPortal,
                                     uint32_t flags,
                                     uint32_t sdqcrFlags,
-@@ -1230,6 +1498,8 @@ static t_Error qman_create_portal(t_QmPortal *p_QmPortal,
+@@ -1230,6 +1524,8 @@ static t_Error qman_create_portal(t_QmPortal *p_QmPortal,
          REPORT_ERROR(MAJOR, E_INVALID_STATE, ("MC initialization failed"));
          goto fail_mc;
      }
@@ -4532,7 +4557,7 @@ index 31313d37f97..11456d2d9dc 100644
      if (qm_isr_init(p_QmPortal->p_LowQmPortal)) {
          REPORT_ERROR(MAJOR, E_INVALID_STATE, ("ISR initialization failed"));
          goto fail_isr;
-@@ -1272,7 +1542,37 @@ goto fail_dqrr_mr_empty;
+@@ -1272,7 +1568,37 @@ goto fail_dqrr_mr_empty;
  goto fail_dqrr_mr_empty;
      }
      qm_isr_disable_write(p_QmPortal->p_LowQmPortal, 0);
@@ -4570,7 +4595,7 @@ index 31313d37f97..11456d2d9dc 100644
      return E_OK;
  fail_dqrr_mr_empty:
  fail_eqcr_empty:
-@@ -1341,8 +1641,8 @@ static t_Error qman_orp_update(t_QmPortal   *p_QmPortal,
+@@ -1341,8 +1667,8 @@ static t_Error qman_orp_update(t_QmPortal   *p_QmPortal,
      else
          /* No need to check 4 QMAN_ENQUEUE_FLAG_HOLE */
          orpSeqnum &= ~QM_EQCR_SEQNUM_NESN;
@@ -4581,7 +4606,7 @@ index 31313d37f97..11456d2d9dc 100644
  qmPortalEqcrPvbCommit(p_QmPortal->p_LowQmPortal, (uint8_t)QM_EQCR_VERB_ORP);
  
      PUNLOCK(p_QmPortal);
-@@ -1394,7 +1694,7 @@ static t_Error QmPortalUnregisterCg(t_Handle h_QmPortal, uint8_t  cgId)
+@@ -1394,7 +1720,7 @@ static t_Error QmPortalUnregisterCg(t_Handle h_QmPortal, uint8_t  cgId)
      if(!(p_QmPortal->cgrs[0].q.__state[cgId/32] & (0x80000000 >> (cgId % 32))))
          RETURN_ERROR(MINOR, E_BUSY, ("CG is not in use"));
  
@@ -4590,7 +4615,7 @@ index 31313d37f97..11456d2d9dc 100644
      p_QmPortal->cgsHandles[cgId] = NULL;
  
      return E_OK;
-@@ -1494,7 +1794,6 @@ static t_Error QmPortalPullFrame(t_Handle h_QmPortal, uint32_t pdqcr, t_DpaaFD *
+@@ -1494,7 +1820,6 @@ static t_Error QmPortalPullFrame(t_Handle h_QmPortal, uint32_t pdqcr, t_DpaaFD *
      t_QmPortal              *p_QmPortal = (t_QmPortal *)h_QmPortal;
      struct qm_dqrr_entry    *p_Dq;
      int                     prefetch;
@@ -4598,7 +4623,7 @@ index 31313d37f97..11456d2d9dc 100644
  
      ASSERT_COND(p_QmPortal);
      ASSERT_COND(p_Frame);
-@@ -1515,13 +1814,8 @@ static t_Error QmPortalPullFrame(t_Handle h_QmPortal, uint32_t pdqcr, t_DpaaFD *
+@@ -1515,13 +1840,8 @@ static t_Error QmPortalPullFrame(t_Handle h_QmPortal, uint32_t pdqcr, t_DpaaFD *
          p_Dq = qm_dqrr_current(p_QmPortal->p_LowQmPortal);
          if (!p_Dq)
              continue;
@@ -4614,7 +4639,7 @@ index 31313d37f97..11456d2d9dc 100644
          if (p_QmPortal->options & QMAN_PORTAL_FLAG_DCA)
          {
              qmPortalDqrrDcaConsume1ptr(p_QmPortal->p_LowQmPortal,
-@@ -1792,6 +2086,12 @@ t_Error QM_PORTAL_AddPoolChannel(t_Handle h_QmPortal, uint8_t poolChannelId)
+@@ -1792,6 +2112,12 @@ t_Error QM_PORTAL_AddPoolChannel(t_Handle h_QmPortal, uint8_t poolChannelId)
      sdqcrFlags |= QM_SDQCR_CHANNELS_POOL(poolChannelId+1);
      qm_dqrr_sdqcr_set(p_QmPortal->p_LowQmPortal, sdqcrFlags);
  
@@ -4627,7 +4652,7 @@ index 31313d37f97..11456d2d9dc 100644
      return E_OK;
  }
  
-@@ -1820,6 +2120,51 @@ t_Error QM_PORTAL_Poll(t_Handle h_QmPortal, e_QmPortalPollSource source)
+@@ -1820,6 +2146,51 @@ t_Error QM_PORTAL_Poll(t_Handle h_QmPortal, e_QmPortalPollSource source)
      return E_OK;
  }
  
@@ -4679,7 +4704,7 @@ index 31313d37f97..11456d2d9dc 100644
  t_Error QM_PORTAL_PollFrame(t_Handle h_QmPortal, t_QmPortalFrameInfo *p_frameInfo)
  {
      t_QmPortal              *p_QmPortal     = (t_QmPortal *)h_QmPortal;
-@@ -1842,21 +2187,21 @@ t_Error QM_PORTAL_PollFrame(t_Handle h_QmPortal, t_QmPortalFrameInfo *p_frameInf
+@@ -1842,21 +2213,21 @@ t_Error QM_PORTAL_PollFrame(t_Handle h_QmPortal, t_QmPortalFrameInfo *p_frameInf
          PUNLOCK(p_QmPortal);
          return ERROR_CODE(E_EMPTY);
      }
@@ -4706,7 +4731,7 @@ index 31313d37f97..11456d2d9dc 100644
      }
      if (p_QmPortal->options & QMAN_PORTAL_FLAG_DCA) {
          qmPortalDqrrDcaConsume1ptr(p_QmPortal->p_LowQmPortal,
-@@ -2138,7 +2483,6 @@ t_Error QM_FQR_Enqueue(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffse
+@@ -2138,7 +2509,6 @@ t_Error QM_FQR_Enqueue(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffse
      t_QmFqr                 *p_QmFqr = (t_QmFqr *)h_QmFqr;
      t_QmPortal              *p_QmPortal;
      struct qm_eqcr_entry    *p_Eq;
@@ -4714,7 +4739,7 @@ index 31313d37f97..11456d2d9dc 100644
      const struct qman_fq    *p_Fq;
  
      SANITY_CHECK_RETURN_ERROR(p_QmFqr, E_INVALID_HANDLE);
-@@ -2171,19 +2515,9 @@ t_Error QM_FQR_Enqueue(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffse
+@@ -2171,19 +2541,9 @@ t_Error QM_FQR_Enqueue(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffse
          return ERROR_CODE(E_BUSY);
      }
  
@@ -6387,10 +6412,10 @@ index 00000000000..552d6be43ca
 +}
 diff --git a/sys/contrib/ncsw/user/env/xx_arm64.c b/sys/contrib/ncsw/user/env/xx_arm64.c
 new file mode 100644
-index 00000000000..a41b0da1897
+index 00000000000..b3afd8b579e
 --- /dev/null
 +++ b/sys/contrib/ncsw/user/env/xx_arm64.c
-@@ -0,0 +1,891 @@
+@@ -0,0 +1,794 @@
 +/*-
 + * Copyright (c) 2011 Semihalf.
 + * Copyright (c) 2026 Mono Technologies Inc.
@@ -6461,39 +6486,12 @@ index 00000000000..a41b0da1897
 +#include "list_ext.h"
 +#include "mm_ext.h"
 +
-+/* Configuration */
-+
-+/* Define the number of dTSEC ports active in system */
-+#define MALLOCSMART_DTSEC_IN_USE	4
-+
-+/*
-+ * Calculate malloc's pool size for dTSEC's buffers.
-+ * We reserve 1MB pool for each dTSEC port.
-+ */
-+#define	MALLOCSMART_POOL_SIZE		\
-+    (MALLOCSMART_DTSEC_IN_USE * 1024 * 1024)
-+
-+#define MALLOCSMART_SLICE_SIZE		(PAGE_SIZE / 2)		/* 2kB */
-+
-+/* Defines */
-+#define MALLOCSMART_SIZE_TO_SLICE(x)	\
-+    (((x) + MALLOCSMART_SLICE_SIZE - 1) / MALLOCSMART_SLICE_SIZE)
-+#define MALLOCSMART_SLICES		\
-+    MALLOCSMART_SIZE_TO_SLICE(MALLOCSMART_POOL_SIZE)
-+
 +/* Malloc Pool for NetCommSW */
 +MALLOC_DEFINE(M_NETCOMMSW, "NetCommSW", "NetCommSW software stack");
 +MALLOC_DEFINE(M_NETCOMMSW_MT, "NetCommSWTrack",
 +    "NetCommSW software allocation tracker");
 +
-+/* MallocSmart data structures */
-+static void *XX_MallocSmartPool;
-+static int XX_MallocSmartMap[MALLOCSMART_SLICES];
-+
-+static struct mtx XX_MallocSmartLock;
 +static struct mtx XX_MallocTrackLock;
-+MTX_SYSINIT(XX_MallocSmartLockInit, &XX_MallocSmartLock,
-+    "NetCommSW MallocSmart Lock", MTX_DEF);
 +MTX_SYSINIT(XX_MallocTrackLockInit, &XX_MallocTrackLock,
 +    "NetCommSW MallocTrack Lock", MTX_DEF);
 +
@@ -6564,122 +6562,52 @@ index 00000000000..a41b0da1897
 +	return (p);
 +}
 +
-+static int
-+XX_MallocSmartMapCheck(unsigned int start, unsigned int slices)
-+{
-+	unsigned int i;
-+
-+	mtx_assert(&XX_MallocSmartLock, MA_OWNED);
-+	for (i = start; i < start + slices; i++)
-+		if (XX_MallocSmartMap[i])
-+			return (FALSE);
-+	return (TRUE);
-+}
-+
-+static void
-+XX_MallocSmartMapSet(unsigned int start, unsigned int slices)
-+{
-+	unsigned int i;
-+
-+	mtx_assert(&XX_MallocSmartLock, MA_OWNED);
-+
-+	for (i = start; i < start + slices; i++)
-+		XX_MallocSmartMap[i] = ((i == start) ? slices : -1);
-+}
-+
-+static void
-+XX_MallocSmartMapClear(unsigned int start, unsigned int slices)
-+{
-+	unsigned int i;
-+
-+	mtx_assert(&XX_MallocSmartLock, MA_OWNED);
-+
-+	for (i = start; i < start + slices; i++)
-+		XX_MallocSmartMap[i] = 0;
-+}
-+
++/*
++ * XX_MallocSmartInit — no-op, kept for API compatibility.
++ * Previously allocated a fixed contigmalloc pool; now XX_MallocSmart
++ * delegates to XX_Malloc (kernel heap) with manual alignment, matching
++ * the Linux NCSW implementation.
++ */
 +int
 +XX_MallocSmartInit(void)
 +{
-+	int error;
 +
-+	error = E_OK;
-+	mtx_lock(&XX_MallocSmartLock);
-+
-+	if (XX_MallocSmartPool)
-+		goto out;
-+
-+	/* Allocate MallocSmart pool */
-+	XX_MallocSmartPool = contigmalloc(MALLOCSMART_POOL_SIZE, M_NETCOMMSW,
-+	    M_NOWAIT, 0, 0xFFFFFFFFFull, MALLOCSMART_POOL_SIZE, 0);
-+	if (!XX_MallocSmartPool) {
-+		error = E_NO_MEMORY;
-+		goto out;
-+	}
-+
-+out:
-+	mtx_unlock(&XX_MallocSmartLock);
-+	return (error);
++	return (E_OK);
 +}
 +
++/*
++ * XX_MallocSmart — aligned allocation via kernel heap.
++ *
++ * Matches Linux NCSW xx_arm_linux.c: allocate size + alignment + header,
++ * align the returned pointer, store the original malloc pointer in the
++ * word immediately before it so XX_FreeSmart can recover it.
++ */
 +void *
 +XX_MallocSmart(uint32_t size, int memPartitionId, uint32_t alignment)
 +{
-+	unsigned int i;
-+	vm_offset_t addr;
++	uintptr_t *aligned, raw;
 +
-+	addr = 0;
++	if (alignment < sizeof(uintptr_t))
++		alignment = sizeof(uintptr_t);
 +
-+	/* Convert alignment and size to number of slices */
-+	alignment = MALLOCSMART_SIZE_TO_SLICE(alignment);
-+	size = MALLOCSMART_SIZE_TO_SLICE(size);
++	size += alignment + sizeof(uintptr_t);
++	raw = (uintptr_t)XX_Malloc(size);
++	if (raw == 0)
++		return (NULL);
 +
-+	/* Lock resources */
-+	mtx_lock(&XX_MallocSmartLock);
++	aligned = (uintptr_t *)((raw + alignment + sizeof(uintptr_t))
++	    & ~((uintptr_t)alignment - 1));
++	*(aligned - 1) = raw;
 +
-+	/* Allocate region */
-+	for (i = 0; i + size <= MALLOCSMART_SLICES; i += alignment) {
-+		if (XX_MallocSmartMapCheck(i, size)) {
-+			XX_MallocSmartMapSet(i, size);
-+			addr = (vm_offset_t)XX_MallocSmartPool +
-+			    (i * MALLOCSMART_SLICE_SIZE);
-+			break;
-+		}
-+	}
-+
-+	/* Unlock resources */
-+	mtx_unlock(&XX_MallocSmartLock);
-+
-+	return ((void *)addr);
++	return ((void *)aligned);
 +}
 +
 +void
 +XX_FreeSmart(void *p)
 +{
-+	unsigned int start, slices;
 +
-+	/* Calculate first slice of region */
-+	start = MALLOCSMART_SIZE_TO_SLICE((vm_offset_t)(p) -
-+	    (vm_offset_t)XX_MallocSmartPool);
-+
-+	if (__predict_false(start >= MALLOCSMART_SLICES)) {
-+		printf("XX_FreeSmart: %p outside pool (start=%u max=%u)\n",
-+		    p, start, (unsigned)MALLOCSMART_SLICES);
-+		return;
-+	}
-+
-+	/* Lock resources */
-+	mtx_lock(&XX_MallocSmartLock);
-+
-+	KASSERT(XX_MallocSmartMap[start] > 0,
-+	    ("XX_FreeSmart: Double or mid-block free!\n"));
-+
-+	/* Free region */
-+	slices = XX_MallocSmartMap[start];
-+	XX_MallocSmartMapClear(start, slices);
-+
-+	/* Unlock resources */
-+	mtx_unlock(&XX_MallocSmartLock);
++	if (p != NULL)
++		XX_Free((void *)(*(((uintptr_t *)p) - 1)));
 +}
 +
 +void
