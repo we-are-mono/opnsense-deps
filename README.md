@@ -30,7 +30,7 @@ All build paths assume the source tree is at `/build`. This directory must conta
 # Clone into /build directly
 sudo mkdir /build && sudo chown $(whoami) /build
 cd /build
-git clone https://github.com/opnsense/tools.git opnsense-build
+git clone https://github.com/maurice-w/opnsense-vm-images.git opnsense-build
 git clone https://github.com/opnsense/src.git opnsense-src
 # opnsense-deps is this repository
 
@@ -137,7 +137,7 @@ The kernel source tree (`opnsense-src`) is patched from upstream OPNsense via
    ```
    git clone https://github.com/opnsense/src.git opnsense-src
    cd opnsense-src
-   git checkout stable/26.1
+   git checkout 2e22159dcc0  # stable/26.1 base commit the patch was generated against
    git apply ../opnsense-deps/OPNsense-26.1-aarch64-GATEWAY.patch
    git checkout -b mono-gateway
    git commit -am "Apply Mono Gateway patch"
