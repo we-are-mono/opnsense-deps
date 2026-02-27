@@ -17,3 +17,5 @@ export_syms
 *_if.h
 opt_*.h
 machine
+x86
+i386

@@ -23,12 +23,14 @@
 #include <sys/selinfo.h>
 #include <sys/poll.h>
 #include <sys/event.h>
+#include <sys/jail.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 #include <sys/uio.h>
 #include <sys/mbuf.h>
 
 #include <net/if.h>
+#include <net/vnet.h>
 #include <net/if_var.h>
 #include <net/pfvar.h>
 #include <netinet/tcp_fsm.h>
@@ -136,6 +138,8 @@ static struct cdev	*pfn_cdev;
 /* Statistics */
 static uint64_t		pfn_events_total;
 static uint64_t		pfn_events_dropped;
+static uint64_t		pfn_counter_updates;
+static uint64_t		pfn_counter_misses;
 
 static struct sysctl_ctx_list	pfn_sysctl_ctx;
 
@@ -348,6 +352,58 @@ pfn_dev_read(struct cdev *dev __unused, struct uio *uio, int ioflag)
 }
 
 static int
+pfn_dev_ioctl(struct cdev *dev __unused, u_long cmd, caddr_t data,
+    int fflag __unused, struct thread *td)
+{
+	struct pfn_counter_update *upd;
+	struct pfn_counter_entry *entries;
+	struct pf_kstate *s;
+	uint32_t i;
+	int error;
+
+	switch (cmd) {
+	case PFN_IOC_UPDATE_COUNTERS:
+		break;
+	default:
+		return (ENOTTY);
+	}
+
+	upd = (struct pfn_counter_update *)data;
+	if (upd->count == 0)
+		return (0);
+	if (upd->count > PFN_COUNTER_BATCH_MAX)
+		return (EINVAL);
+
+	entries = malloc(upd->count * sizeof(*entries), M_TEMP, M_WAITOK);
+	error = copyin(upd->entries, entries, upd->count * sizeof(*entries));
+	if (error) {
+		free(entries, M_TEMP);
+		return (error);
+	}
+
+	CURVNET_SET(TD_TO_VNET(td));
+
+	for (i = 0; i < upd->count; i++) {
+		s = pf_find_state_byid(entries[i].id, entries[i].creatorid);
+		if (s == NULL) {
+			pfn_counter_misses++;
+			continue;
+		}
+		s->packets[0] += entries[i].packets[0];
+		s->packets[1] += entries[i].packets[1];
+		s->bytes[0] += entries[i].bytes[0];
+		s->bytes[1] += entries[i].bytes[1];
+		PF_STATE_UNLOCK(s);
+		pfn_counter_updates++;
+	}
+
+	CURVNET_RESTORE();
+
+	free(entries, M_TEMP);
+	return (0);
+}
+
+static int
 pfn_dev_poll(struct cdev *dev __unused, int events, struct thread *td)
 {
 	int revents = 0;
@@ -416,6 +472,7 @@ static struct cdevsw pfn_cdevsw = {
 	.d_open =	pfn_dev_open,
 	.d_close =	pfn_dev_close,
 	.d_read =	pfn_dev_read,
+	.d_ioctl =	pfn_dev_ioctl,
 	.d_poll =	pfn_dev_poll,
 	.d_kqfilter =	pfn_dev_kqfilter,
 	.d_name =	PFN_DEV_NAME,
@@ -449,6 +506,16 @@ pfn_sysctl_init(void)
 	    OID_AUTO, "events_dropped", CTLFLAG_RD,
 	    &pfn_events_dropped, 0,
 	    "Events dropped (ring full)");
+
+	SYSCTL_ADD_U64(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "counter_updates", CTLFLAG_RD,
+	    &pfn_counter_updates, 0,
+	    "PF state counter updates from CDX");
+
+	SYSCTL_ADD_U64(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "counter_misses", CTLFLAG_RD,
+	    &pfn_counter_misses, 0,
+	    "PF state counter update misses (state gone)");
 }
 
 static void
@@ -472,6 +539,8 @@ pfn_load(void)
 	pfn_open = 0;
 	pfn_events_total = 0;
 	pfn_events_dropped = 0;
+	pfn_counter_updates = 0;
+	pfn_counter_misses = 0;
 	memset(pfn_notified, 0, sizeof(pfn_notified));
 
 	/* Create /dev/pfnotify */

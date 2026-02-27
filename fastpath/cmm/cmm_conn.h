@@ -40,6 +40,12 @@ struct cmm_conn {
 	uint64_t		pf_id;
 	uint32_t		pf_creatorid;
 	uint8_t			pf_direction;
+
+	/* NAT companion PF state (PF_OUT state for NAT connections) */
+	uint64_t		pf_id_nat;
+	uint32_t		pf_creatorid_nat;
+	uint8_t			pf_has_nat_id;
+
 	char			ifname[IFNAMSIZ];
 
 	/* Offload state */
@@ -75,6 +81,12 @@ void cmm_conn_deregister_all(struct cmm_global *g);
 
 /* Deregister connections using a changed route, clearing their route pointers */
 void cmm_route_invalidate_conns(struct cmm_global *g, struct cmm_route *rt);
+
+/*
+ * Sync CDX hardware flow counters into PF state table.
+ * Queries per-flow stats from CDX and pushes deltas via pfnotify ioctl.
+ */
+void cmm_conn_stats_sync(struct cmm_global *g);
 
 /*
  * Handle FCI async events (CDX conntrack timeout/FIN notifications).

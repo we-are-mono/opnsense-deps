@@ -194,6 +194,22 @@ main(int argc, char *argv[])
 	/* Reset CDX tables */
 	cmm_fe_reset(g);
 
+	/* Enable CDX per-flow statistics */
+	{
+		fpp_stat_enable_cmd_t stat_en;
+
+		memset(&stat_en, 0, sizeof(stat_en));
+		stat_en.action = FPP_CMM_STAT_ENABLE;
+		stat_en.bitmask = FPP_STAT_FLOW_BITMASK;
+		if (fci_write(g->fci_handle, FPP_CMD_STAT_ENABLE,
+		    sizeof(stat_en), (unsigned short *)&stat_en) == 0)
+			cmm_print(CMM_LOG_INFO,
+			    "CDX flow statistics enabled");
+		else
+			cmm_print(CMM_LOG_WARN,
+			    "CDX flow statistics enable failed");
+	}
+
 	/* Open /dev/pf */
 	g->pf_fd = open("/dev/pf", O_RDONLY);
 	if (g->pf_fd < 0) {
@@ -260,7 +276,7 @@ main(int argc, char *argv[])
 	{
 		int fd;
 
-		fd = open(PFN_DEV_PATH, O_RDONLY | O_NONBLOCK);
+		fd = open(PFN_DEV_PATH, O_RDWR | O_NONBLOCK);
 		if (fd >= 0) {
 			g->pfnotify_fd = fd;
 			cmm_print(CMM_LOG_INFO,
@@ -345,6 +361,13 @@ main(int argc, char *argv[])
 		nev++;
 	}
 
+	/* CDX flow counter sync timer (5s) */
+	if (g->pfnotify_fd >= 0) {
+		EV_SET(&kev[nev], 5, EVFILT_TIMER, EV_ADD,
+		    NOTE_MSECONDS, CMM_STATS_SYNC_MS, NULL);
+		nev++;
+	}
+
 	if (kevent(g->kq, kev, nev, NULL, 0, NULL) < 0) {
 		cmm_print(CMM_LOG_ERR, "kevent register: %s",
 		    strerror(errno));
@@ -368,7 +391,10 @@ main(int argc, char *argv[])
 
 		for (i = 0; i < n; i++) {
 			if (events[i].filter == EVFILT_TIMER) {
-				cmm_conn_poll(g);
+				if (events[i].ident == 5)
+					cmm_conn_stats_sync(g);
+				else
+					cmm_conn_poll(g);
 			} else if (events[i].udata ==
 			    (void *)(uintptr_t)1) {
 				/* Control socket: new connection */

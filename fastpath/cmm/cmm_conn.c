@@ -653,6 +653,11 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 				conn->rep_route = NULL;
 			}
 
+			/* Save NAT companion PF state ID */
+			conn->pf_id_nat = ev->id;
+			conn->pf_creatorid_nat = ev->creatorid;
+			conn->pf_has_nat_id = 1;
+
 			conn->flags |= CONN_F_HAS_NAT;
 		}
 
@@ -918,6 +923,11 @@ cmm_conn_poll(struct cmm_global *g)
 					conn->rep_route = NULL;
 				}
 
+				/* Save NAT companion PF state ID */
+				conn->pf_id_nat = pfs->id;
+				conn->pf_creatorid_nat = pfs->creatorid;
+				conn->pf_has_nat_id = 1;
+
 				conn->flags |= CONN_F_HAS_NAT;
 
 				if (pfs->af == AF_INET) {
@@ -1020,6 +1030,113 @@ sweep:
 			    "conn: %u tracked, %u offloaded",
 			    conn_count, conn_offloaded);
 	}
+}
+
+/* --- CDX flow counter sync to PF state table --------------------- */
+
+/*
+ * Flush a batch of counter entries to pf_notify via ioctl.
+ */
+static void
+stats_sync_flush(struct cmm_global *g, struct pfn_counter_entry *entries,
+    uint32_t count)
+{
+	struct pfn_counter_update upd;
+
+	if (count == 0)
+		return;
+
+	upd.count = count;
+	upd.pad = 0;
+	upd.entries = entries;
+
+	if (ioctl(g->pfnotify_fd, PFN_IOC_UPDATE_COUNTERS, &upd) < 0)
+		cmm_print(CMM_LOG_WARN, "stats_sync: ioctl failed: %s",
+		    strerror(errno));
+}
+
+void
+cmm_conn_stats_sync(struct cmm_global *g)
+{
+	struct pfn_counter_entry batch[PFN_COUNTER_BATCH_MAX];
+	fpp_stat_flow_status_cmd_t cmd;
+	fpp_stat_flow_entry_response_t resp;
+	unsigned short resp_len;
+	struct cmm_conn *conn;
+	struct list_head *pos;
+	uint32_t n;
+	int i, rc;
+
+	if (g->pfnotify_fd < 0)
+		return;
+
+	n = 0;
+
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn, hash_entry);
+
+			if (!(conn->flags & CONN_F_OFFLOADED))
+				continue;
+
+			/* Build stat query for this flow's original 5-tuple */
+			memset(&cmd, 0, sizeof(cmd));
+			cmd.action = FPP_CMM_STAT_QUERY_RESET;
+			cmd.ip_family = (conn->af == AF_INET) ? 4 : 6;
+			cmd.Protocol = conn->proto;
+			cmd.Sport = conn->orig_sport;
+			cmd.Dport = conn->orig_dport;
+
+			if (conn->af == AF_INET) {
+				memcpy(&cmd.Saddr, conn->orig_saddr, 4);
+				memcpy(&cmd.Daddr, conn->orig_daddr, 4);
+			} else {
+				memcpy(cmd.Saddr_v6, conn->orig_saddr, 16);
+				memcpy(cmd.Daddr_v6, conn->orig_daddr, 16);
+			}
+
+			resp_len = sizeof(resp);
+			rc = fci_cmd(g->fci_handle, FPP_CMD_STAT_FLOW,
+			    (unsigned short *)&cmd, sizeof(cmd),
+			    (unsigned short *)&resp, &resp_len);
+			if (rc != 0)
+				continue;
+			if (resp.TotalPackets == 0 && resp.TotalBytes == 0)
+				continue;
+
+			/* Primary PF state */
+			memset(&batch[n], 0, sizeof(batch[n]));
+			batch[n].id = conn->pf_id;
+			batch[n].creatorid = conn->pf_creatorid;
+			batch[n].packets[0] = resp.TotalPackets;
+			batch[n].bytes[0] = resp.TotalBytes;
+			n++;
+
+			/* NAT companion PF state (if present) */
+			if (conn->pf_has_nat_id) {
+				if (n >= PFN_COUNTER_BATCH_MAX)
+					stats_sync_flush(g, batch, n),
+					    n = 0;
+				memset(&batch[n], 0, sizeof(batch[n]));
+				batch[n].id = conn->pf_id_nat;
+				batch[n].creatorid = conn->pf_creatorid_nat;
+				batch[n].packets[0] = resp.TotalPackets;
+				batch[n].bytes[0] = resp.TotalBytes;
+				n++;
+			}
+
+			if (n >= PFN_COUNTER_BATCH_MAX) {
+				stats_sync_flush(g, batch, n);
+				n = 0;
+			}
+		}
+	}
+
+	/* Flush remaining */
+	stats_sync_flush(g, batch, n);
+
+	cmm_print(CMM_LOG_TRACE, "stats sync done");
 }
 
 /* --- FCI async event handling (CDX conntrack timeout) ------------- */

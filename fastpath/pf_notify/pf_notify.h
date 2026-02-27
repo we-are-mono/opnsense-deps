@@ -70,4 +70,28 @@ _Static_assert(sizeof(struct pfn_event) == 128,
     "pfn_event must be exactly 128 bytes");
 #endif
 
+/* --- Counter sync (userspace -> kernel via ioctl) --- */
+
+#define PFN_COUNTER_BATCH_MAX	256
+
+struct pfn_counter_entry {
+	uint64_t	id;		/* PF state ID */
+	uint32_t	creatorid;	/* PF state creator ID */
+	uint32_t	pad;
+	uint64_t	packets[2];	/* delta [0]=forward, [1]=reply */
+	uint64_t	bytes[2];	/* delta [0]=forward, [1]=reply */
+};
+
+struct pfn_counter_update {
+	uint32_t	count;		/* number of entries */
+	uint32_t	pad;
+	const struct pfn_counter_entry *entries;	/* userspace pointer */
+};
+
+#ifdef _KERNEL
+#include <sys/ioccom.h>
+#endif
+
+#define PFN_IOC_UPDATE_COUNTERS	_IOW('N', 1, struct pfn_counter_update)
+
 #endif /* PF_NOTIFY_H */

@@ -40,6 +40,7 @@
 
 #define CMM_DEFAULT_POLL_MS	1000	/* PF state poll interval */
 #define CMM_RECONCILE_MS	30000	/* reconciliation interval (push mode) */
+#define CMM_STATS_SYNC_MS	5000	/* CDX flow counter sync interval */
 #define CMM_PID_FILE		"/var/run/cmm.pid"
 
 struct cmm_global {
