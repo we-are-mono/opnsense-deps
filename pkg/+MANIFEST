@@ -11,21 +11,10 @@ hardware drivers (emc2302, ina2xx, lp5812, sfpled), FMan configuration
 tools (fmc, dpa_app), connection management (cmm, cmmctl), and fan
 control (fand).
 EOD
-maintainer: "support@mono.si"
-www: "https://mono.vision"
+maintainer: "tomaz@mono.si"
+www: "https://mono.si"
 arch: "FreeBSD:14:aarch64"
 prefix: "/"
 categories: ["sysutils"]
 licenses: ["BSD2CLAUSE"]
 licenselogic: "single"
-
-scripts: {
-  post-install: <<EOD
-#!/bin/sh
-kldxref /boot/modules
-EOD
-  post-deinstall: <<EOD
-#!/bin/sh
-kldxref /boot/modules
-EOD
-}
