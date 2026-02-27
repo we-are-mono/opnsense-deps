@@ -37,8 +37,11 @@ BUILDDIR?=	${OPSDIR}/_build
 # Output directory for all final artifacts
 DISTDIR?=	${OPSDIR}/dist
 
-# Package settings
-PKG_VERSION?=	26.1.2.1
+# Package version: derived from git tags (e.g., tag "26.1.2" + 3 commits = "26.1.2_3")
+# Override: make package PKG_VERSION=26.1.2.1
+_PKG_TAG!=	git -C ${OPSDIR} describe --abbrev=0 --always HEAD 2>/dev/null || echo 0.0.0
+_PKG_REV!=	git -C ${OPSDIR} rev-list --count ${_PKG_TAG}..HEAD 2>/dev/null || echo 0
+PKG_VERSION?=	${_PKG_TAG}${_PKG_REV:N0:S/^/_/}
 PKG_STAGEDIR=	${BUILDDIR}/pkg-stage
 PKG_CONFDIR=	${OPSDIR}/config
 PKG_RCDDIR=	${OPSDIR}/rc.d
