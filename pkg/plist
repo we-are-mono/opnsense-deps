@@ -1,0 +1,22 @@
+/boot/modules/cdx.ko
+/boot/modules/fci.ko
+/boot/modules/auto_bridge.ko
+/boot/modules/pf_notify.ko
+/boot/modules/sfpled.ko
+/boot/modules/lp5812.ko
+/boot/modules/emc2302.ko
+/boot/modules/ina2xx.ko
+/usr/local/sbin/cmm
+/usr/local/sbin/cmmctl
+/usr/local/sbin/dpa_app
+/usr/local/sbin/fmc
+/usr/local/sbin/fand
+/etc/cdx_cfg.xml
+/etc/cdx_pcd.xml
+/etc/cdx_sp.xml
+@dir /etc/fmc/config
+/etc/fmc/config/hxs_pdl_v3.xml
+/usr/local/etc/rc.d/cmm
+/usr/local/etc/rc.d/fand
+/usr/local/etc/rc.syshook.d/early/01-growfs
+/usr/local/etc/rc.syshook.d/early/02-mono-modules

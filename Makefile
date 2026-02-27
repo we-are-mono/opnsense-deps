@@ -37,6 +37,13 @@ BUILDDIR?=	${OPSDIR}/_build
 # Output directory for all final artifacts
 DISTDIR?=	${OPSDIR}/dist
 
+# Package settings
+PKG_VERSION?=	26.1.2.1
+PKG_STAGEDIR=	${BUILDDIR}/pkg-stage
+PKG_CONFDIR=	${OPSDIR}/config
+PKG_RCDDIR=	${OPSDIR}/rc.d
+PKG_METADIR=	${OPSDIR}/pkg
+
 # ============================================================
 # Top-level targets
 # ============================================================
@@ -136,6 +143,52 @@ dist: modules userspace
 	cp ${BUILDDIR}/fand/fand ${DISTDIR}/
 
 # ============================================================
+# FreeBSD package (mono-gateway.pkg)
+# ============================================================
+
+package: dist
+	@rm -rf ${PKG_STAGEDIR}
+	@mkdir -p ${PKG_STAGEDIR}/boot/modules
+	@mkdir -p ${PKG_STAGEDIR}/usr/local/sbin
+	@mkdir -p ${PKG_STAGEDIR}/etc/fmc/config
+	@mkdir -p ${PKG_STAGEDIR}/usr/local/etc/rc.d
+	@mkdir -p ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early
+	# Kernel modules
+	install -m 644 ${DISTDIR}/cdx.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/fci.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/auto_bridge.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/pf_notify.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/sfpled.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/lp5812.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/emc2302.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/ina2xx.ko ${PKG_STAGEDIR}/boot/modules/
+	# Userspace binaries
+	install -m 755 ${DISTDIR}/cmm ${PKG_STAGEDIR}/usr/local/sbin/
+	install -m 755 ${DISTDIR}/cmmctl ${PKG_STAGEDIR}/usr/local/sbin/
+	install -m 755 ${DISTDIR}/dpa_app ${PKG_STAGEDIR}/usr/local/sbin/
+	install -m 755 ${DISTDIR}/fmc ${PKG_STAGEDIR}/usr/local/sbin/
+	install -m 755 ${DISTDIR}/fand ${PKG_STAGEDIR}/usr/local/sbin/
+	# Configuration files
+	install -m 644 ${PKG_CONFDIR}/cdx_cfg.xml ${PKG_STAGEDIR}/etc/
+	install -m 644 ${PKG_CONFDIR}/cdx_pcd.xml ${PKG_STAGEDIR}/etc/
+	install -m 644 ${PKG_CONFDIR}/cdx_sp.xml ${PKG_STAGEDIR}/etc/
+	install -m 644 ${PKG_CONFDIR}/hxs_pdl_v3.xml ${PKG_STAGEDIR}/etc/fmc/config/
+	# rc.d service scripts
+	install -m 755 ${PKG_RCDDIR}/cmm ${PKG_STAGEDIR}/usr/local/etc/rc.d/
+	install -m 755 ${PKG_RCDDIR}/fand ${PKG_STAGEDIR}/usr/local/etc/rc.d/
+	# rc.syshook early scripts
+	install -m 755 ${PKG_RCDDIR}/01-growfs ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
+	install -m 755 ${PKG_RCDDIR}/02-mono-modules ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
+	# Generate manifest with version
+	sed 's/%%VERSION%%/${PKG_VERSION}/' ${PKG_METADIR}/+MANIFEST \
+	    > ${PKG_STAGEDIR}/+MANIFEST
+	# Build package (ABI override for cross-compilation on amd64 host)
+	ABI=FreeBSD:14:aarch64 pkg create \
+	    -M ${PKG_STAGEDIR}/+MANIFEST -p ${PKG_METADIR}/plist \
+	    -r ${PKG_STAGEDIR} -o ${DISTDIR}/
+	@echo "==> Package: ${DISTDIR}/mono-gateway-${PKG_VERSION}.pkg"
+
+# ============================================================
 # Clean
 # ============================================================
 
@@ -150,7 +203,7 @@ clean:
 	${MAKE} -C ${KMOD_SFP} ${KMOD_ARGS} clean
 	rm -rf ${BUILDDIR}
 
-.PHONY: all modules userspace dist clean \
+.PHONY: all modules userspace dist package clean \
 	build-cdx build-fci build-auto_bridge build-pf_notify \
 	build-emc2302 build-ina2xx build-lp5812 build-sfpled \
 	fmlib fmc dpa_app cmm cmmctl fand
