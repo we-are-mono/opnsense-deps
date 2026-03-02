@@ -1,0 +1,335 @@
+From 3a16d0493cab9b13c36c21da4154c1486ed27d9a Mon Sep 17 00:00:00 2001
+From: Tomaz Zaman <tomaz@mono.si>
+Date: Mon, 2 Mar 2026 12:41:07 +0100
+Subject: [PATCH 6/6] build: GATEWAY kernel config and DPAA build rules
+
+- GATEWAY: kernel config for Mono Gateway (LS1046A + DPAA1)
+- dpaa/config.dpaa_arm64, files.dpaa_arm64: DPAA build integration
+- conf/files, files.arm64: new driver entries (gpyphy, ina2xx, etc.)
+- conf/options: DPAA_FAST_PATH option
+---
+ sys/arm64/conf/GATEWAY                |  86 +++++++++++++++++
+ sys/arm64/conf/dpaa/config.dpaa_arm64 |  29 ++++++
+ sys/arm64/conf/dpaa/files.dpaa_arm64  | 131 ++++++++++++++++++++++++++
+ sys/conf/files                        |   2 +
+ sys/conf/files.arm64                  |   4 +-
+ sys/conf/options                      |   1 +
+ 6 files changed, 251 insertions(+), 2 deletions(-)
+ create mode 100644 sys/arm64/conf/GATEWAY
+ create mode 100644 sys/arm64/conf/dpaa/config.dpaa_arm64
+ create mode 100644 sys/arm64/conf/dpaa/files.dpaa_arm64
+
+diff --git a/sys/arm64/conf/GATEWAY b/sys/arm64/conf/GATEWAY
+new file mode 100644
+index 00000000000..4962c5e19f4
+--- /dev/null
++++ b/sys/arm64/conf/GATEWAY
+@@ -0,0 +1,86 @@
++#
++# MONO-GATEWAY -- NXP LS1046A with DPAA1 + CAAM for OPNsense
++#
++# Based on GENERIC (like SMP-ARM) with hardware-specific additions:
++#   - DPAA1 packet acceleration (FMan/QMan/BMan)
++#   - CAAM crypto accelerator (JR + QI paths)
++#   - GPY115 PHY, SFP+, I2C sensors
++#   - Early printf via QorIQ ns16550
++#
++
++include		GENERIC
++
++ident		MONO-GATEWAY
++
++# Disable debug for production
++nooptions	INVARIANTS
++nooptions	INVARIANT_SUPPORT
++nooptions	WITNESS
++nooptions	WITNESS_SKIPSPIN
++nooptions	LOCK_PROFILING
++
++# OPNsense standard features (from SMP-ARM)
++options 	DDB
++options 	GEOM_BDE
++options 	GEOM_ELI
++options 	GEOM_MIRROR
++options 	IPFIREWALL_DEFAULT_TO_ACCEPT
++options 	IPFIREWALL_VERBOSE
++options 	IPSTEALTH
++options 	MROUTING
++options 	PPS_SYNC
++options 	TCP_SIGNATURE
++
++# Platform
++options 	SOC_NXP_LS
++
++# Root filesystem (label set by opnsense-build arm.sh)
++options 	ROOTDEVNAME=\"ufs:/dev/ufs/OPNsense_ARM\"
++
++# Early printf for debugging
++options 	SOCDEV_PA=0x2000000
++options 	EARLY_PRINTF=qoriq
++
++# eMMC (QorIQ ESDHC)
++device		sdhci
++
++# I2C (board-specific)
++device		vf_i2c			# Freescale Vybrid / QorIQ I2C controller
++device		pca954x		# NXP PCA9545/9546/9548 I2C mux/switch
++device		ina2xx			# TI INA219/INA226/INA234 power monitor
++# pcf2131 is built as an out-of-tree module in opnsense-deps/drivers/pcf2131/
++
++# DPAA1 (FMan/QMan/BMan) -- NXP LS1046A packet acceleration
++include		"dpaa/config.dpaa_arm64"
++device		dpaa
++options 	QMAN_CEETM_SUPPORT	# QMan CEETM egress QoS traffic shaping
++device		sff			# Small Form Factor Transceivers (SFP+)
++
++# caam is built as an out-of-tree module in opnsense-deps/drivers/caam/
++
++# Packet filter
++device		pf
++device		pflog
++device		pfsync
++device		carp
++
++# Networking
++device		lagg			# Link aggregation
++device		if_bridge		# Bridge interface
++device		enc			# IPsec enc(4) interface
++device		gif			# IPv6/IPv4 tunneling
++device		gre			# GRE tunneling
++device		tuntap			# Tunnel/TAP
++
++# OPNsense extras
++device		wlan_acl
++device		wlan_xauth
++device		u3g
++device		uftdi
++device		umodem
++device		uplcom
++device		uvisor
++device		uvscom
++
++# DTBs
++makeoptions	MODULES_EXTRA+="dtb/freescale"
+diff --git a/sys/arm64/conf/dpaa/config.dpaa_arm64 b/sys/arm64/conf/dpaa/config.dpaa_arm64
+new file mode 100644
+index 00000000000..4b4756753b5
+--- /dev/null
++++ b/sys/arm64/conf/dpaa/config.dpaa_arm64
+@@ -0,0 +1,29 @@
++
++files		"dpaa/files.dpaa_arm64"
++
++makeoptions DPAA_COMPILE_CMD="${LINUXKPI_C} ${DPAAWARNFLAGS} \
++	-Wno-cast-qual -Wno-unused-function -Wno-init-self -fms-extensions \
++	-include $S/contrib/ncsw/build/dflags_arm64.h \
++	-Wno-error=missing-prototypes \
++	-I$S/contrib/ncsw/build/ \
++	-I$S/contrib/ncsw/inc \
++	-I$S/contrib/ncsw/inc/cores \
++	-I$S/contrib/ncsw/inc/etc \
++	-I$S/contrib/ncsw/inc/Peripherals \
++	-I$S/contrib/ncsw/etc \
++	-I$S/contrib/ncsw/Peripherals/BM \
++	-I$S/contrib/ncsw/Peripherals/FM \
++	-I$S/contrib/ncsw/Peripherals/FM/HC \
++	-I$S/contrib/ncsw/Peripherals/FM/inc \
++	-I$S/contrib/ncsw/Peripherals/FM/MAC \
++	-I$S/contrib/ncsw/Peripherals/FM/Pcd \
++	-I$S/contrib/ncsw/Peripherals/FM/Port \
++	-I$S/contrib/ncsw/Peripherals/FM/Rtc \
++	-I$S/contrib/ncsw/Peripherals/QM \
++	-I$S/contrib/ncsw/inc/flib \
++	-I$S/contrib/ncsw/inc/integrations"
++
++makeoptions FMCD_COMPILE_CMD="${DPAA_COMPILE_CMD} \
++	-I$S/../../ASK/freebsd/fmlib/include/fmd \
++	-I$S/../../ASK/freebsd/fmlib/include/fmd/Peripherals \
++	-I$S/../../ASK/freebsd/fmlib/include/fmd/integrations"
+diff --git a/sys/arm64/conf/dpaa/files.dpaa_arm64 b/sys/arm64/conf/dpaa/files.dpaa_arm64
+new file mode 100644
+index 00000000000..7ed4809d11c
+--- /dev/null
++++ b/sys/arm64/conf/dpaa/files.dpaa_arm64
+@@ -0,0 +1,131 @@
++
++# NetCommSW drivers — ARM64 variant
++# Identical source list to powerpc/conf/dpaa/files.dpaa except:
++# - core.c     -> core_arm64.c  (ARM64 CORE_GetId etc.)
++# - xx.c       -> xx_arm64.c    (no PowerPC ccsrbar/LAW/TLB deps)
++# - if_dtsec*  excluded         (LS1046A uses mEMAC, not dTSEC)
++
++contrib/ncsw/etc/error.c				optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/etc/ncsw_list.c				optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/etc/ncsw_memcpy.c				optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/etc/mm.c					optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/etc/ncsw_mem.c				optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/etc/sprint.c				optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/BM/bm.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/BM/bman_low.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/BM/bm_pool.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/BM/bm_portal.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/SP/fm_sp.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD} -Wno-enum-conversion"
++contrib/ncsw/Peripherals/FM/SP/fman_sp.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Rtc/fm_rtc.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Rtc/fman_rtc.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Port/fman_port.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Port/fm_port.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Port/fm_port_im.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_cc.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_ehash.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_kg.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fman_kg.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_manip.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_pcd.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_plcr.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_prs.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fman_prs.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/Pcd/fm_replic.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++# mEMAC — the MAC type used by LS1046A FManv3 (DPAA_VERSION >= 11)
++contrib/ncsw/Peripherals/FM/MAC/memac.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/MAC/memac_mii_acc.c	optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/MAC/fman_memac.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/MAC/fman_memac_mii_acc.c	optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/MAC/fm_mac.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/HC/hc.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/fm_muram.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/FM/fm_ncsw.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD} -Wno-unused-but-set-variable"
++contrib/ncsw/Peripherals/FM/fman_ncsw.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD} ${NO_WMISLEADING_INDENTATION}"
++contrib/ncsw/Peripherals/QM/qm.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/Peripherals/QM/qm_portal_fqr.c		optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/user/env/stdlib.c				optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++# ARM64 replacements for xx.c and core.c (no PowerPC deps)
++contrib/ncsw/user/env/xx_arm64.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++contrib/ncsw/user/env/core_arm64.c			optional dpaa	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++
++# FreeBSD Wrappers
++dev/dpaa/portals_common.c			optional dpaa		\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/bman_portals.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/bman.c					optional dpaa		\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/bman_fdt.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/qman_portals.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/qman.c					optional dpaa		\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/qman_fdt.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/fman.c				optional dpaa fdt		\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/fman_chardev.c			optional dpaa fdt	\
++	no-depend compile-with "${FMCD_COMPILE_CMD}"
++dev/dpaa/fman_fdt.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++# mEMAC external MDIO controller (fsl,fman-memac-mdio)
++dev/dpaa/memac_mdio.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++# Ethernet driver (reuses dTSEC wrapper with mEMAC via NCSW FM_MAC API)
++dev/dpaa/if_dtsec.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/if_dtsec_fdt.c			optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/if_dtsec_im.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++dev/dpaa/if_dtsec_rm.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++# Offline / Header Manipulation ports
++dev/dpaa/dpaa_oh.c				optional dpaa fdt	\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
++# CEETM (Channel Egress Enhancement and Traffic Management)
++dev/dpaa/qman_ceetm.c				optional dpaa		\
++	no-depend compile-with "${DPAA_COMPILE_CMD}"
+diff --git a/sys/conf/files b/sys/conf/files
+index 00816d17c70..4483fcf521e 100644
+--- a/sys/conf/files
++++ b/sys/conf/files
+@@ -1838,6 +1838,7 @@ dev/iicbus/rtc/rv3032.c		optional rv3032 iicbus fdt
+ dev/iicbus/rtc/rx8803.c		optional rx8803 iicbus fdt
+ dev/iicbus/rtc/s35390a.c	optional s35390a
+ dev/iicbus/sensor/htu21.c	optional htu21
++dev/iicbus/sensor/ina2xx.c	optional ina2xx
+ dev/iicbus/sensor/lm75.c	optional lm75
+ dev/iicbus/sensor/max44009.c	optional max44009
+ dev/iicbus/gpio/pcf8574.c	optional pcf8574
+@@ -2401,6 +2402,7 @@ dev/mii/dp83822phy.c		optional miibus | dp83822phy
+ dev/mii/dp83867phy.c		optional miibus | dp83867phy
+ dev/mii/e1000phy.c		optional miibus | e1000phy
+ dev/mii/gentbi.c		optional miibus | gentbi
++dev/mii/gpyphy.c		optional miibus | gpyphy
+ dev/mii/icsphy.c		optional miibus | icsphy
+ dev/mii/ip1000phy.c		optional miibus | ip1000phy
+ dev/mii/jmphy.c			optional miibus | jmphy
+diff --git a/sys/conf/files.arm64 b/sys/conf/files.arm64
+index cf2e1d22da8..b22a047f8f5 100644
+--- a/sys/conf/files.arm64
++++ b/sys/conf/files.arm64
+@@ -636,8 +636,8 @@ dev/iicbus/controller/vybrid/vf_i2c_acpi.c	optional vf_i2c iicbus acpi soc_nxp_l
+ dev/iicbus/controller/vybrid/vf_i2c_fdt.c	optional vf_i2c iicbus fdt soc_nxp_ls
+ arm64/qoriq/qoriq_dw_pci.c			optional pci fdt soc_nxp_ls
+ arm64/qoriq/qoriq_gpio_pic.c			optional gpio fdt soc_nxp_ls
+-arm64/qoriq/qoriq_therm.c			optional pci fdt soc_nxp_ls
+-arm64/qoriq/qoriq_therm_if.m			optional pci fdt soc_nxp_ls
++arm64/qoriq/qoriq_therm.c			optional fdt soc_nxp_ls
++arm64/qoriq/qoriq_therm_if.m			optional fdt soc_nxp_ls
+ arm64/qoriq/clk/ls1028a_clkgen.c		optional clk soc_nxp_ls fdt
+ arm64/qoriq/clk/ls1028a_flexspi_clk.c		optional clk soc_nxp_ls fdt
+ arm64/qoriq/clk/ls1046a_clkgen.c		optional clk soc_nxp_ls fdt
+diff --git a/sys/conf/options b/sys/conf/options
+index e201f8a4bdb..42045dd1141 100644
+--- a/sys/conf/options
++++ b/sys/conf/options
+@@ -52,6 +52,7 @@ DDB_CAPTURE_DEFAULTBUFSIZE	opt_ddb.h
+ DDB_CAPTURE_MAXBUFSIZE	opt_ddb.h
+ DDB_CTF		opt_ddb.h
+ DDB_NUMSYM	opt_ddb.h
++QMAN_CEETM_SUPPORT	opt_dpaa.h
+ EARLY_PRINTF	opt_global.h
+ FULL_BUF_TRACKING	opt_global.h
+ GDB
+-- 
+2.47.3
+

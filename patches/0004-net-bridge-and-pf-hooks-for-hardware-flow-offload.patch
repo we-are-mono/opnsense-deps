@@ -1,0 +1,245 @@
+From 2baf4e703d807b16b3170683b0bc9601591c0dc0 Mon Sep 17 00:00:00 2001
+From: Tomaz Zaman <tomaz@mono.si>
+Date: Mon, 2 Mar 2026 12:40:55 +0100
+Subject: [PATCH 4/6] net: bridge and pf hooks for hardware flow offload
+
+- if_bridge: CDX fast-path notification on member add/remove
+- pf: state change notifications for CMM connection offload
+---
+ sys/net/if_bridge.c       | 17 ++++++++++++++++-
+ sys/net/if_bridgevar.h    | 12 ++++++++++++
+ sys/net/pfvar.h           | 22 ++++++++++++++++++++++
+ sys/netpfil/pf/pf.c       | 24 ++++++++++++++++++++++++
+ sys/netpfil/pf/pf_ioctl.c |  5 +++++
+ 5 files changed, 79 insertions(+), 1 deletion(-)
+
+diff --git a/sys/net/if_bridge.c b/sys/net/if_bridge.c
+index 0f4ec01fb39..bae570386f7 100644
+--- a/sys/net/if_bridge.c
++++ b/sys/net/if_bridge.c
+@@ -303,6 +303,10 @@ int	bridge_rtable_prune_period = BRIDGE_RTABLE_PRUNE_PERIOD;
+ VNET_DEFINE_STATIC(uma_zone_t, bridge_rtnode_zone);
+ #define	V_bridge_rtnode_zone	VNET(bridge_rtnode_zone)
+ 
++/* L2 flow offload hooks (set by auto_bridge.ko) */
++bridge_l2flow_hook_t bridge_l2flow_hook;
++bridge_fdb_can_expire_hook_t bridge_fdb_can_expire_hook;
++
+ static int	bridge_clone_create(struct if_clone *, char *, size_t,
+ 		    struct ifc_data *, struct ifnet **);
+ static int	bridge_clone_destroy(struct if_clone *, struct ifnet *, uint32_t);
+@@ -2528,6 +2532,9 @@ bridge_forward(struct bridge_softc *sc, struct bridge_iflist *sbif,
+ 			return;
+ 	}
+ 
++	if (bridge_l2flow_hook != NULL)
++		bridge_l2flow_hook(ifp, m, src_if, dst_if);
++
+ 	bridge_enqueue(sc, dst_if, m);
+ 	return;
+ 
+@@ -3110,8 +3117,16 @@ bridge_rtage(struct bridge_softc *sc)
+ 
+ 	CK_LIST_FOREACH_SAFE(brt, &sc->sc_rtlist, brt_list, nbrt) {
+ 		if ((brt->brt_flags & IFBAF_TYPEMASK) == IFBAF_DYNAMIC) {
+-			if (time_uptime >= brt->brt_expire)
++			if (time_uptime >= brt->brt_expire) {
++				if (bridge_fdb_can_expire_hook != NULL &&
++				    bridge_fdb_can_expire_hook(brt->brt_addr,
++				    sc->sc_ifp) == 0) {
++					brt->brt_expire = time_uptime +
++					    sc->sc_brttimeout;
++					continue;
++				}
+ 				bridge_rtnode_destroy(sc, brt);
++			}
+ 		}
+ 	}
+ }
+diff --git a/sys/net/if_bridgevar.h b/sys/net/if_bridgevar.h
+index 511ca753858..72c6f4abbf3 100644
+--- a/sys/net/if_bridgevar.h
++++ b/sys/net/if_bridgevar.h
+@@ -325,6 +325,18 @@ struct ifbpstpconf {
+ extern	void (*bridge_dn_p)(struct mbuf *, struct ifnet *);
+ extern	bool (*bridge_member_ifaddrs_p)(void);
+ 
++/*
++ * L2 flow offload hooks — set by auto_bridge.ko, called from
++ * bridge_forward() and bridge_rtage() respectively.
++ */
++typedef void (*bridge_l2flow_hook_t)(struct ifnet *bridge_ifp,
++    struct mbuf *m, struct ifnet *src_if, struct ifnet *dst_if);
++typedef int (*bridge_fdb_can_expire_hook_t)(const uint8_t *mac,
++    struct ifnet *bridge_ifp);
++
++extern	bridge_l2flow_hook_t bridge_l2flow_hook;
++extern	bridge_fdb_can_expire_hook_t bridge_fdb_can_expire_hook;
++
+ #endif /* _KERNEL */
+ 
+ #endif /* _NET_IF_BRIDGEVAR_H_ */
+diff --git a/sys/net/pfvar.h b/sys/net/pfvar.h
+index 0f6e2e24022..0bddfb49087 100644
+--- a/sys/net/pfvar.h
++++ b/sys/net/pfvar.h
+@@ -1198,6 +1198,28 @@ VNET_DECLARE(pfsync_defer_t *, pfsync_defer_ptr);
+ #define V_pfsync_defer_ptr		VNET(pfsync_defer_ptr)
+ extern pfsync_detach_ifnet_t	*pfsync_detach_ifnet_ptr;
+ 
++/*
++ * pf_notify — offload state change notification (separate from pfsync).
++ *
++ * Lock context for callbacks:
++ *   INSERT: PF_HASHROW_LOCK held, NET_EPOCH
++ *   UPDATE: PF_RULES_RLOCK + PF_STATE_LOCK(s) held, NET_EPOCH
++ *   DELETE: PF_HASHROW_LOCK held, NET_EPOCH
++ *
++ * Callbacks MUST NOT sleep, acquire PF_RULES_WLOCK, or re-enter the
++ * pf state machine.
++ */
++typedef void		pfnotify_insert_state_t(struct pf_kstate *);
++typedef void		pfnotify_update_state_t(struct pf_kstate *);
++typedef void		pfnotify_delete_state_t(struct pf_kstate *);
++
++VNET_DECLARE(pfnotify_insert_state_t *, pfnotify_insert_state_ptr);
++#define V_pfnotify_insert_state_ptr	VNET(pfnotify_insert_state_ptr)
++VNET_DECLARE(pfnotify_update_state_t *, pfnotify_update_state_ptr);
++#define V_pfnotify_update_state_ptr	VNET(pfnotify_update_state_ptr)
++VNET_DECLARE(pfnotify_delete_state_t *, pfnotify_delete_state_ptr);
++#define V_pfnotify_delete_state_ptr	VNET(pfnotify_delete_state_ptr)
++
+ void			pfsync_state_export_1301(struct pfsync_state_1301 *,
+ 			    struct pf_kstate *);
+ void			pfsync_state_export_1400(struct pfsync_state_1400 *,
+diff --git a/sys/netpfil/pf/pf.c b/sys/netpfil/pf/pf.c
+index c9b61f7b652..dac5ce76f33 100644
+--- a/sys/netpfil/pf/pf.c
++++ b/sys/netpfil/pf/pf.c
+@@ -1670,6 +1670,8 @@ pf_state_insert(struct pfi_kkif *kif, struct pfi_kkif *orig_kif,
+ 	pf_counter_u64_add(&V_pf_status.fcounters[FCNT_STATE_INSERT], 1);
+ 	if (V_pfsync_insert_state_ptr != NULL)
+ 		V_pfsync_insert_state_ptr(s);
++	if (V_pfnotify_insert_state_ptr != NULL)
++		V_pfnotify_insert_state_ptr(s);
+ 
+ 	/* Returns locked. */
+ 	return (0);
+@@ -2457,6 +2459,8 @@ pf_unlink_state(struct pf_kstate *s)
+ 
+ 	if (V_pfsync_delete_state_ptr != NULL)
+ 		V_pfsync_delete_state_ptr(s);
++	if (V_pfnotify_delete_state_ptr != NULL)
++		V_pfnotify_delete_state_ptr(s);
+ 
+ 	STATE_DEC_COUNTERS(s);
+ 
+@@ -8652,6 +8656,8 @@ pf_test(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0,
+ 			if (s != NULL) {
+ 				if (V_pfsync_update_state_ptr != NULL)
+ 					V_pfsync_update_state_ptr(s);
++				if (V_pfnotify_update_state_ptr != NULL)
++					V_pfnotify_update_state_ptr(s);
+ 				r = s->rule.ptr;
+ 				a = s->anchor.ptr;
+ 			}
+@@ -8717,6 +8723,8 @@ pf_test(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0,
+ 			if (s != NULL) {
+ 				if (V_pfsync_update_state_ptr != NULL)
+ 					V_pfsync_update_state_ptr(s);
++				if (V_pfnotify_update_state_ptr != NULL)
++					V_pfnotify_update_state_ptr(s);
+ 				r = s->rule.ptr;
+ 				a = s->anchor.ptr;
+ 			}
+@@ -8750,6 +8758,8 @@ pf_test(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0,
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL) {
+@@ -8770,6 +8780,8 @@ pf_test(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0,
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL)
+@@ -8792,6 +8804,8 @@ pf_test(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0,
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL)
+@@ -9310,6 +9324,8 @@ pf_test6(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL) {
+@@ -9374,6 +9390,8 @@ pf_test6(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL)
+@@ -9404,6 +9422,8 @@ pf_test6(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL) {
+@@ -9431,6 +9451,8 @@ pf_test6(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL)
+@@ -9444,6 +9466,8 @@ pf_test6(int dir, int pflags, struct ifnet *ifp, struct mbuf **m0, struct inpcb
+ 		if (action == PF_PASS) {
+ 			if (V_pfsync_update_state_ptr != NULL)
+ 				V_pfsync_update_state_ptr(s);
++			if (V_pfnotify_update_state_ptr != NULL)
++				V_pfnotify_update_state_ptr(s);
+ 			r = s->rule.ptr;
+ 			a = s->anchor.ptr;
+ 		} else if (s == NULL)
+diff --git a/sys/netpfil/pf/pf_ioctl.c b/sys/netpfil/pf/pf_ioctl.c
+index 88203411e3e..a003f8d3673 100644
+--- a/sys/netpfil/pf/pf_ioctl.c
++++ b/sys/netpfil/pf/pf_ioctl.c
+@@ -304,6 +304,11 @@ VNET_DEFINE(pfsync_clear_states_t *, pfsync_clear_states_ptr);
+ VNET_DEFINE(pfsync_defer_t *, pfsync_defer_ptr);
+ pfsync_detach_ifnet_t *pfsync_detach_ifnet_ptr;
+ 
++/* pf_notify */
++VNET_DEFINE(pfnotify_insert_state_t *, pfnotify_insert_state_ptr);
++VNET_DEFINE(pfnotify_update_state_t *, pfnotify_update_state_ptr);
++VNET_DEFINE(pfnotify_delete_state_t *, pfnotify_delete_state_ptr);
++
+ /* pflog */
+ pflog_packet_t			*pflog_packet_ptr = NULL;
+ 
+-- 
+2.47.3
+

@@ -161,6 +161,7 @@ dist: modules userspace
 # ============================================================
 
 package: dist
+	@rm -f ${DISTDIR}/mono-gateway-*.pkg
 	@rm -rf ${PKG_STAGEDIR}
 	@mkdir -p ${PKG_STAGEDIR}/boot/modules
 	@mkdir -p ${PKG_STAGEDIR}/usr/local/sbin
