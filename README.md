@@ -51,7 +51,7 @@ for OPNsense 26.1). Mismatched versions can cause ABI issues in cross-compiled k
 ### 1. Prerequisites
 
 ```
-sudo pkg install -y git aarch64-binutils qemu-user-static
+sudo pkg install -y git aarch64-binutils qemu-user-static python3
 ```
 
 ### 2. Set up `/build`
@@ -62,34 +62,43 @@ All build paths assume the source tree is at `/build`. This directory must conta
 **Local development** (source tree lives on the build server):
 
 ```
-# Clone into /build directly
 sudo mkdir /build && sudo chown $(whoami) /build
-cd /build
-git clone https://github.com/maurice-w/opnsense-vm-images.git opnsense-build
-git clone https://github.com/opnsense/src.git opnsense-src
-# opnsense-deps is this repository
-
-# Copy the GATEWAY device config into the build system
-cp /build/opnsense-deps/config/GATEWAY.conf /build/opnsense-build/device/
 ```
 
 **Remote source via NFS** (source tree lives on another machine):
 
 ```
-# Mount the remote share, then expose it at /build via nullfs
-echo '/path/to/nfs/mount /mnt/remote nfs rw 0 0' | sudo tee -a /etc/fstab
-sudo mount /mnt/remote
+# Enable the NFS client
+sudo sysrc nfs_client_enable="YES"
+sudo service nfsclient start
 
-sudo mkdir /build
-echo '/mnt/remote /build nullfs rw,late 0 0' | sudo tee -a /etc/fstab
+# Mount the remote share — the NFS export is the directory containing
+# opnsense-build, opnsense-src, opnsense-deps, etc.
+# Replace [server] with the NFS server's hostname and [nfs-export] with
+# the path to the exported directory.
+sudo mkdir -p /mnt/opnsense /build
+echo '[server]:[nfs-export] /mnt/opnsense nfs rw,late 0 0' | sudo tee -a /etc/fstab
+echo '/mnt/opnsense /build nullfs rw,late 0 0' | sudo tee -a /etc/fstab
+sudo mount /mnt/opnsense
 sudo mount /build
-
-# Copy the GATEWAY device config into the build system
-cp /build/opnsense-deps/config/GATEWAY.conf /build/opnsense-build/device/
 ```
 
 Using nullfs (rather than a symlink) ensures `pwd` reports `/build/...` in build
 output, keeping kernel version strings and module paths clean.
+
+### 2b. Clone repositories
+
+Both the local and NFS paths need the following repositories in `/build`:
+
+```
+cd /build
+git clone https://github.com/maurice-w/opnsense-vm-images.git opnsense-build
+git clone https://github.com/opnsense/src.git opnsense-src
+git clone https://github.com/we-are-mono/opnsense-deps
+
+# Copy the GATEWAY device config into the build system
+cp /build/opnsense-deps/config/GATEWAY.conf /build/opnsense-build/device/
+```
 
 ### 3. Prefetch base and packages
 
@@ -97,18 +106,27 @@ Official OPNsense mirrors only publish amd64 sets. For aarch64, use walker.earth
 Check https://opnsense-update.walker.earth/FreeBSD:14:aarch64/26.1/sets/ for available versions.
 
 ```
-VERSION=26.1.1   # use latest available on the mirror
+export VERSION=26.1.1   # use latest available on the mirror
 
-sudo make -C /build/opnsense-build prefetch-base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
+sudo make -C /build/opnsense-build prefetch-base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
 
 # The build system expects a -GATEWAY suffix on the base set
 cd /usr/local/opnsense/build/26.1/aarch64/sets
 sudo mv base-${VERSION}-aarch64.txz base-${VERSION}-aarch64-GATEWAY.txz
 
-sudo make -C /build/opnsense-build prefetch-packages DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
+sudo make -C /build/opnsense-build prefetch-packages DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
 ```
 
 This skips `make base`, `make ports`, `make core`, and `make plugins` (no cross-compilation needed).
+
+The build system's `check_packages()` validates the host `pkg` version against the
+ports tree before checking whether the prefetched set already has completion markers.
+Create a minimal stub so the version check passes:
+
+```
+sudo mkdir -p /usr/ports/ports-mgmt/pkg
+echo "PORTVERSION=$(pkg -v)" | sudo tee /usr/ports/ports-mgmt/pkg/Makefile
+```
 
 **Important:** Do NOT run `make base` or `make xtools` locally. If an `xtools-*-aarch64.txz`
 set exists in the sets directory, remove it before building the image. The xtools overlay/restore
@@ -149,10 +167,13 @@ sudo rm -rf /usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY
 
 ### 6. Install libxml2 into cross-compilation sysroot
 
-Required by opnsense-deps (fmc links against libxml2).
+Required by opnsense-deps (fmc links against libxml2). Fetch the aarch64 package
+from the FreeBSD pkg mirror and extract its headers and libraries into the
+cross-compilation sysroot created by `make kernel`.
 
 ```
-fetch -o /tmp/libxml2.pkg 'https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/Hashed/libxml2-2.15.1_1~82f6f2bc79.pkg'
+# Check https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/ for current version
+fetch -o /tmp/libxml2.pkg 'https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/libxml2-2.15.1_1.pkg'
 mkdir -p /tmp/libxml2-extract && cd /tmp/libxml2-extract && tar xf /tmp/libxml2.pkg
 
 SYSROOT=/usr/obj/build/opnsense-src/arm64.aarch64/tmp
@@ -161,7 +182,7 @@ sudo cp -r /tmp/libxml2-extract/usr/local/include/libxml2 ${SYSROOT}/usr/local/i
 sudo cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* ${SYSROOT}/usr/local/lib/
 ```
 
-### 7. Build custom modules and tools
+### 7. Build custom modules and tools (everything in this repo)
 
 ```
 make -C /build/opnsense-deps -j24 all
@@ -174,6 +195,12 @@ sudo make -C /build/opnsense-build arm-5G DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=
 ```
 
 Output: `/usr/local/opnsense/build/26.1/aarch64/images/OPNsense-*-arm-aarch64-GATEWAY.img`
+
+Optionally, compress the image for faster transfers:
+
+```
+sudo gzip /usr/local/opnsense/build/26.1/aarch64/images/OPNsense-*-GATEWAY.img
+```
 
 ## Development workflow
 
@@ -240,7 +267,21 @@ by `make dist`.
 
 ## Local / Test Deployment
 
-Boot the gateway into Recovery Linux. Assign an IP since Recovery Linux has no DHCP (adjust IPs to match your network):
+Flashing writes the image directly to the gateway's eMMC. The gateway must be
+booted into Recovery Linux (initramfs) so the eMMC is not in use.
+
+**Warning:** This overwrites the entire eMMC, including any existing OPNsense
+installation and its configuration.
+
+### 1. Boot into Recovery Linux
+
+Power on the gateway and let U-Boot autoboot into Recovery Linux (or interrupt
+U-Boot and run `run recovery`).
+
+### 2. Configure networking on the gateway
+
+Recovery Linux has no DHCP client. Assign a static IP on the uplink port
+(adjust addresses to match your network):
 
 ```
 ip link set eth3 up
@@ -248,31 +289,43 @@ ip addr add 10.0.0.69/24 dev eth3
 ip route add default via 10.0.0.1 dev eth3
 ```
 
-On your build server, serve the image directory over HTTP:
+### 3. Serve the image from the build server
+
+On the build server, start an HTTP server in the images directory:
 
 ```
-python3 -m http.server
+cd /usr/local/opnsense/build/26.1/aarch64/images
+python3 -m http.server 8000
 ```
 
-Then on the gateway, fetch and flash in one go (the image is too large to store locally first):
+### 4. Flash the eMMC
+
+On the gateway, stream the compressed image directly to the eMMC. This
+downloads, decompresses, and writes in a single pipeline — no local storage
+needed (works even on devices with limited RAM):
 
 ```
-curl http://10.0.0.70:8000/OPNsense-GATEWAY.img | dd of=/dev/mmcblk0 bs=1M
+curl http://[build-server]:8000/OPNsense-*-GATEWAY.img.gz | gunzip | dd of=/dev/mmcblk0 bs=1M
 ```
 
-Or flash a pre-built image from the mirror (gzip-compressed):
+For an uncompressed image (slower transfer, no gunzip needed):
 
 ```
-curl -kO https://opnsense.mono.si/images/OPNsense-YYYYMMDD-arm-aarch64-GATEWAY.img.gz \
-    | gunzip | dd of=/dev/mmcblk0 bs=1M
+curl http://[build-server]:8000/OPNsense-*-GATEWAY.img | dd of=/dev/mmcblk0 bs=1M
 ```
 
-**Warning:** This overwrites the entire eMMC, including any existing OPNsense
-installation and its configuration.
+### 5. Reboot
+
+```
+reboot
+```
+
+U-Boot will load `kernel.img` and the device tree from the FAT partition and
+boot into OPNsense.
 
 ## Booting into OPNsense
 
-The board's default boot command loads Recovery Linux. To boot OPNsense instead,
+The board's default boot command loads OpenWRT. To boot OPNsense instead,
 interrupt U-Boot's autoboot (press any key during the countdown) and configure
 a persistent `opnsense` boot environment:
 
