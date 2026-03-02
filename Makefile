@@ -160,7 +160,7 @@ dist: modules userspace
 # FreeBSD package (mono-gateway.pkg)
 # ============================================================
 
-package: dist
+package: clean dist
 	@rm -f ${DISTDIR}/mono-gateway-*.pkg
 	@rm -rf ${PKG_STAGEDIR}
 	@mkdir -p ${PKG_STAGEDIR}/boot/modules

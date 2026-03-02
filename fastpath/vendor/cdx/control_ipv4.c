@@ -977,8 +977,19 @@ int IP_HandleIP_ROUTE_RESOLVE (U16 *p, U16 Length)
 			onif_desc = get_onif_by_name(RtCmd.outputDevice);
 			iif_desc  = get_onif_by_name(RtCmd.inputDevice);
 			underlying_iif_desc = get_onif_by_name(RtCmd.UnderlyingInputDevice);
-			if (!onif_desc) 
+			if (!onif_desc) {
+				DPA_ERROR("%s::route %u out='%s' UNKNOWN\n",
+					__FUNCTION__, RtCmd.id, RtCmd.outputDevice);
 				return ERR_UNKNOWN_INTERFACE;
+			}
+
+			if (!iif_desc && RtCmd.inputDevice[0])
+				DPA_ERROR("%s::route %u in='%s' not found\n",
+					__FUNCTION__, RtCmd.id, RtCmd.inputDevice);
+			if (!underlying_iif_desc && RtCmd.UnderlyingInputDevice[0])
+				DPA_ERROR("%s::route %u underlying_in='%s' not found\n",
+					__FUNCTION__, RtCmd.id,
+					RtCmd.UnderlyingInputDevice);
 
 			pRtEntry = L2_route_add(RtCmd.id, 0);
 
@@ -994,11 +1005,11 @@ int IP_HandleIP_ROUTE_RESOLVE (U16 *p, U16 Length)
 
 			pRtEntry->onif_index 		= get_onif_index(onif_desc);
 			if(iif_desc)
-				pRtEntry->input_itf 		= iif_desc->itf; // For local routes like that of tunnels input_it and underlying_input_itf are NULL
+				pRtEntry->input_itf 		= iif_desc->itf;
 			else
 				pRtEntry->input_itf = NULL;
 			if(underlying_iif_desc)
-				pRtEntry->underlying_input_itf 	= underlying_iif_desc->itf; 
+				pRtEntry->underlying_input_itf 	= underlying_iif_desc->itf;
 			else
 				pRtEntry->underlying_input_itf = pRtEntry->input_itf;
 
@@ -1037,8 +1048,19 @@ int IP_HandleIP_ROUTE_RESOLVE (U16 *p, U16 Length)
 			onif_desc = get_onif_by_name(RtCmd.outputDevice);
 			iif_desc  = get_onif_by_name(RtCmd.inputDevice);
 			underlying_iif_desc = get_onif_by_name(RtCmd.UnderlyingInputDevice);
-			if (!onif_desc)
+			if (!onif_desc) {
+				DPA_ERROR("%s::route %u update out='%s' UNKNOWN\n",
+					__FUNCTION__, RtCmd.id, RtCmd.outputDevice);
 				return ERR_UNKNOWN_INTERFACE;
+			}
+
+			if (!iif_desc && RtCmd.inputDevice[0])
+				DPA_ERROR("%s::route %u update in='%s' not found\n",
+					__FUNCTION__, RtCmd.id, RtCmd.inputDevice);
+			if (!underlying_iif_desc && RtCmd.UnderlyingInputDevice[0])
+				DPA_ERROR("%s::route %u update underlying_in='%s' not found\n",
+					__FUNCTION__, RtCmd.id,
+					RtCmd.UnderlyingInputDevice);
 
 			pRtEntry->itf = onif_desc->itf;
 
@@ -1049,11 +1071,11 @@ int IP_HandleIP_ROUTE_RESOLVE (U16 *p, U16 Length)
 			pRtEntry->onif_index = get_onif_index(onif_desc);
 
 			if(iif_desc)
-				pRtEntry->input_itf 		= iif_desc->itf; // For local routes like that of tunnels input_it and underlying_input_itf are NULL
+				pRtEntry->input_itf 		= iif_desc->itf;
 			else
 				pRtEntry->input_itf = NULL;
 			if(underlying_iif_desc)
-				pRtEntry->underlying_input_itf 	= underlying_iif_desc->itf; 
+				pRtEntry->underlying_input_itf 	= underlying_iif_desc->itf;
 			else
 				pRtEntry->underlying_input_itf = pRtEntry->input_itf;
 
