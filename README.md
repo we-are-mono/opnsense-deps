@@ -180,7 +180,15 @@ Then on the gateway, fetch and flash in one go (the image is too large to store 
 curl http://10.0.0.70:8000/OPNsense-GATEWAY.img | dd of=/dev/mmcblk0 bs=1M
 ```
 
-**Warning:** This overwrites the entire eMMC, including any firmware stored there.
+Or flash a pre-built image from the mirror (gzip-compressed):
+
+```
+curl http://opnsense.mono.si/images/OPNsense-YYYYMMDD-arm-aarch64-GATEWAY.img.gz \
+    | gunzip | dd of=/dev/mmcblk0 bs=1M
+```
+
+**Warning:** This overwrites the entire eMMC, including any existing OPNsense
+installation and its configuration.
 
 ## Booting into OPNsense
 

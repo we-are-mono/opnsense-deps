@@ -65,6 +65,8 @@ KMOD_EMC=	${DRIVERS}/emc2302
 KMOD_INA=	${DRIVERS}/ina2xx
 KMOD_LP=	${DRIVERS}/lp5812
 KMOD_SFP=	${DRIVERS}/sfp-led
+KMOD_PCF=	${DRIVERS}/pcf2131
+KMOD_CAAM=	${DRIVERS}/caam
 
 build-cdx:
 	${MAKE} -C ${KMOD_CDX} ${KMOD_ARGS}
@@ -90,8 +92,15 @@ build-lp5812:
 build-sfpled:
 	${MAKE} -C ${KMOD_SFP} ${KMOD_ARGS}
 
+build-pcf2131:
+	${MAKE} -C ${KMOD_PCF} ${KMOD_ARGS}
+
+build-caam:
+	${MAKE} -C ${KMOD_CAAM} ${KMOD_ARGS}
+
 modules: build-cdx build-fci build-auto_bridge build-pf_notify \
-	 build-emc2302 build-ina2xx build-lp5812 build-sfpled
+	 build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
+	 build-caam
 
 # ============================================================
 # Userspace components (dependency order: fmlib -> fmc -> dpa_app)
@@ -139,6 +148,8 @@ dist: modules userspace
 	cp ${KMOD_INA}/ina2xx.ko ${DISTDIR}/
 	cp ${KMOD_LP}/lp5812.ko ${DISTDIR}/
 	cp ${KMOD_SFP}/sfpled.ko ${DISTDIR}/
+	cp ${KMOD_PCF}/pcf2131.ko ${DISTDIR}/
+	cp ${KMOD_CAAM}/caam.ko ${DISTDIR}/
 	cp ${BUILDDIR}/fmc/fmc ${DISTDIR}/
 	cp ${BUILDDIR}/dpa_app/dpa_app ${DISTDIR}/
 	cp ${BUILDDIR}/cmm/cmm ${DISTDIR}/
@@ -165,6 +176,8 @@ package: dist
 	install -m 644 ${DISTDIR}/lp5812.ko ${PKG_STAGEDIR}/boot/modules/
 	install -m 644 ${DISTDIR}/emc2302.ko ${PKG_STAGEDIR}/boot/modules/
 	install -m 644 ${DISTDIR}/ina2xx.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/pcf2131.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/caam.ko ${PKG_STAGEDIR}/boot/modules/
 	# Userspace binaries
 	install -m 755 ${DISTDIR}/cmm ${PKG_STAGEDIR}/usr/local/sbin/
 	install -m 755 ${DISTDIR}/cmmctl ${PKG_STAGEDIR}/usr/local/sbin/
@@ -204,9 +217,12 @@ clean:
 	${MAKE} -C ${KMOD_INA} ${KMOD_ARGS} clean
 	${MAKE} -C ${KMOD_LP} ${KMOD_ARGS} clean
 	${MAKE} -C ${KMOD_SFP} ${KMOD_ARGS} clean
+	${MAKE} -C ${KMOD_PCF} ${KMOD_ARGS} clean
+	${MAKE} -C ${KMOD_CAAM} ${KMOD_ARGS} clean
 	rm -rf ${BUILDDIR}
 
 .PHONY: all modules userspace dist package clean \
 	build-cdx build-fci build-auto_bridge build-pf_notify \
-	build-emc2302 build-ina2xx build-lp5812 build-sfpled \
+	build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
+	build-caam \
 	fmlib fmc dpa_app cmm cmmctl fand

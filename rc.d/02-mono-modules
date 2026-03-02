@@ -2,7 +2,7 @@
 # OPNsense rc.syshook early script — load Mono Gateway kernel modules
 # Installed to /usr/local/etc/rc.syshook.d/early/02-mono-modules
 
-for mod in cdx auto_bridge pf_notify fci lp5812 sfpled emc2302; do
+for mod in cdx auto_bridge pf_notify fci lp5812 sfpled emc2302 pcf2131 cryptodev caam; do
 	kldload ${mod} 2>/dev/null
 done
 
