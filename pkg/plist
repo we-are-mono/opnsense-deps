@@ -8,6 +8,7 @@
 /boot/modules/ina2xx.ko
 /boot/modules/pcf2131.ko
 /boot/modules/caam.ko
+/boot/modules/tmp431.ko
 /usr/local/sbin/cmm
 /usr/local/sbin/cmmctl
 /usr/local/sbin/dpa_app
