@@ -1,4 +1,4 @@
-From c63286c176669bda9853aaa607197e936d8b0023 Mon Sep 17 00:00:00 2001
+From 0845a0a027ded3cc2637967bcf10d64978e0d13b Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:40:37 +0100
 Subject: [PATCH 2/6] ncsw: port DPAA1 NCSW layer to ARM64
@@ -18,36 +18,37 @@ Subject: [PATCH 2/6] ncsw: port DPAA1 NCSW layer to ARM64
  sys/contrib/ncsw/Peripherals/FM/HC/hc.c       |    5 +
  sys/contrib/ncsw/Peripherals/FM/Pcd/fm_cc.c   |  201 +++
  sys/contrib/ncsw/Peripherals/FM/Pcd/fm_cc.h   |    5 +
- .../ncsw/Peripherals/FM/Pcd/fm_ehash.c        | 1530 +++++++++++++++++
+ .../ncsw/Peripherals/FM/Pcd/fm_ehash.c        | 1516 +++++++++++++++++
  sys/contrib/ncsw/Peripherals/FM/Pcd/fm_kg.c   |   25 +-
+ sys/contrib/ncsw/Peripherals/FM/Pcd/fm_pcd.h  |    3 +
  sys/contrib/ncsw/Peripherals/FM/Pcd/fm_plcr.c |    8 +
- .../ncsw/Peripherals/FM/Pcd/fm_replic.c       |    2 +-
- .../ncsw/Peripherals/FM/Port/fm_port.c        |    4 +
- sys/contrib/ncsw/Peripherals/FM/fm_ncsw.c     |   98 +-
+ .../ncsw/Peripherals/FM/Pcd/fm_replic.c       |    6 +-
+ .../ncsw/Peripherals/FM/Port/fm_port.c        |    8 +-
+ sys/contrib/ncsw/Peripherals/FM/fm_ncsw.c     |  100 +-
  .../ncsw/Peripherals/FM/inc/fm_common.h       |    9 +-
  sys/contrib/ncsw/Peripherals/QM/qm.c          |  118 +-
  sys/contrib/ncsw/Peripherals/QM/qm.h          |   12 +-
- .../ncsw/Peripherals/QM/qm_portal_fqr.c       |  508 +++++-
+ .../ncsw/Peripherals/QM/qm_portal_fqr.c       |  535 +++++-
  sys/contrib/ncsw/Peripherals/QM/qman_low.h    |   53 +-
  .../ncsw/Peripherals/QM/qman_private.h        |   35 +
  sys/contrib/ncsw/build/dflags_arm64.h         |   86 +
  sys/contrib/ncsw/etc/ncsw_memcpy.c            |    6 +
  sys/contrib/ncsw/inc/Peripherals/bm_ext.h     |    3 +
  sys/contrib/ncsw/inc/Peripherals/dpaa_ext.h   |   45 +-
- sys/contrib/ncsw/inc/Peripherals/fm_ehash.h   |  724 ++++++++
+ sys/contrib/ncsw/inc/Peripherals/fm_ehash.h   |  738 ++++++++
  sys/contrib/ncsw/inc/Peripherals/fm_ext.h     |    5 +
  sys/contrib/ncsw/inc/Peripherals/fm_pcd_ext.h |   34 +
- sys/contrib/ncsw/inc/Peripherals/qm_ext.h     |   41 +
+ sys/contrib/ncsw/inc/Peripherals/qm_ext.h     |   58 +-
  sys/contrib/ncsw/inc/core_ext.h               |    8 +-
  sys/contrib/ncsw/inc/cores/arm_ext.h          |   29 +-
  .../inc/integrations/dpaa_integration_ext.h   |  138 +-
  sys/contrib/ncsw/inc/integrations/part_ext.h  |    6 +
  sys/contrib/ncsw/inc/types_freebsd.h          |   23 +-
  sys/contrib/ncsw/user/env/core_arm64.c        |   60 +
- sys/contrib/ncsw/user/env/xx_arm64.c          |  794 +++++++++
+ sys/contrib/ncsw/user/env/xx_arm64.c          |  797 +++++++++
  sys/dev/dpaa/portals.h                        |    5 +
  sys/dev/dpaa/portals_common.c                 |   93 +
- 38 files changed, 4684 insertions(+), 172 deletions(-)
+ 39 files changed, 4738 insertions(+), 178 deletions(-)
  create mode 100644 sys/contrib/ncsw/Peripherals/FM/Pcd/fm_ehash.c
  create mode 100644 sys/contrib/ncsw/build/dflags_arm64.h
  create mode 100644 sys/contrib/ncsw/etc/ncsw_memcpy.c
@@ -765,10 +766,10 @@ index 3456bb565fd..30bed7c5c44 100644
      t_Handle            h_Spinlock;
 diff --git a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_ehash.c b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_ehash.c
 new file mode 100644
-index 00000000000..09926af104e
+index 00000000000..8df1a42f152
 --- /dev/null
 +++ b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_ehash.c
-@@ -0,0 +1,1530 @@
+@@ -0,0 +1,1516 @@
 +/*
 + * fm_ehash.c — FMan enhanced external hash table (kernel-side)
 + *
@@ -1904,20 +1905,6 @@ index 00000000000..09926af104e
 +		delete_ehash_info((struct en_exthash_info *)h_HashTbl);
 +}
 +
-+/*
-+ * ExternalHashTableGetMuramAd — Return MURAM AD pointer for a table.
-+ */
-+void *
-+ExternalHashTableGetMuramAd(t_Handle h_HashTbl)
-+{
-+	struct en_exthash_info *info;
-+
-+	info = (struct en_exthash_info *)h_HashTbl;
-+	if (info == NULL)
-+		return (NULL);
-+	return (info->h_Ad);
-+}
-+
 +/* ================================================================
 + * Global MURAM features — read/write the global data area at
 + * pool + EN_INTERNAL_BUFF_POOL_SIZE (en_exthash_global_mem).
@@ -2174,7 +2161,7 @@ index 00000000000..09926af104e
 + * Prints global data area, timestamp slots, and first internal
 + * buffer pool slot.  Safe to call from callout context.
 + */
-+void
++static void
 +ehash_dump_muram_diag(void)
 +{
 +	uint8_t *global_data;
@@ -2264,7 +2251,7 @@ index 00000000000..09926af104e
 + * Debug
 + * ================================================================ */
 +
-+void
++static void
 +EhashTableWalk(void *h_HashTbl)
 +{
 +	struct en_exthash_info *info;
@@ -2349,6 +2336,25 @@ index f183d2f9ee0..08ffdc821b3 100644
          p_SchemeRegs->kgse_ekfc = knownTmp;
  
          selectTmp = 0;
+diff --git a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_pcd.h b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_pcd.h
+index 27ec9c5bf67..d1d4acd009c 100644
+--- a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_pcd.h
++++ b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_pcd.h
+@@ -437,6 +437,7 @@ t_Handle    PrsConfig(t_FmPcd *p_FmPcd,t_FmPcdParams *p_FmPcdParams);
+ t_Error     PrsInit(t_FmPcd *p_FmPcd);
+ void        PrsEnable(t_FmPcd *p_FmPcd);
+ void        PrsDisable(t_FmPcd *p_FmPcd);
++int         PrsIsEnabled(t_FmPcd *p_FmPcd);
+ void        PrsFree(t_FmPcd *p_FmPcd );
+ t_Error     PrsIncludePortInStatistics(t_FmPcd *p_FmPcd, uint8_t hardwarePortId, bool include);
+ 
+@@ -540,4 +541,6 @@ static __inline__ void FmPcdLockUnlock(t_FmPcdLock *p_Lock)
+ }
+ 
+ 
++t_Handle FM_PCD_GetHcPort(t_Handle h_FmPcd);
++
+ #endif /* __FM_PCD_H */
 diff --git a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_plcr.c b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_plcr.c
 index f23d8b8168b..db687ad8220 100644
 --- a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_plcr.c
@@ -2369,7 +2375,7 @@ index f23d8b8168b..db687ad8220 100644
              RETURN_ERROR(MAJOR, E_INVALID_SELECTION, NO_MSG);
      }
 diff --git a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_replic.c b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_replic.c
-index ee82f73014b..7cfadba5c09 100644
+index ee82f73014b..6bf8cc09694 100644
 --- a/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_replic.c
 +++ b/sys/contrib/ncsw/Peripherals/FM/Pcd/fm_replic.c
 @@ -144,7 +144,7 @@ static t_FmPcdFrmReplicMember *GetAvailableMember(t_FmPcdFrmReplicGroup *p_Repli
@@ -2381,8 +2387,26 @@ index ee82f73014b..7cfadba5c09 100644
          p_ReplicMember = LIST_OBJECT(p_Next, t_FmPcdFrmReplicMember, node);
          ASSERT_COND(p_ReplicMember);
          LIST_DelAndInit(p_Next);
+@@ -643,7 +643,7 @@ void  FrmReplicGroupUpdateOwner(t_Handle                   h_ReplicGroup,
+     }
+ }
+ 
+-t_Error FrmReplicGroupTryLock(t_Handle h_ReplicGroup)
++static t_Error FrmReplicGroupTryLock(t_Handle h_ReplicGroup)
+ {
+     t_FmPcdFrmReplicGroup *p_ReplicGroup = (t_FmPcdFrmReplicGroup *)h_ReplicGroup;
+ 
+@@ -655,7 +655,7 @@ t_Error FrmReplicGroupTryLock(t_Handle h_ReplicGroup)
+     return ERROR_CODE(E_BUSY);
+ }
+ 
+-void FrmReplicGroupUnlock(t_Handle h_ReplicGroup)
++static void FrmReplicGroupUnlock(t_Handle h_ReplicGroup)
+ {
+     t_FmPcdFrmReplicGroup *p_ReplicGroup = (t_FmPcdFrmReplicGroup *)h_ReplicGroup;
+ 
 diff --git a/sys/contrib/ncsw/Peripherals/FM/Port/fm_port.c b/sys/contrib/ncsw/Peripherals/FM/Port/fm_port.c
-index 79419eab453..6faf7fa6b4c 100644
+index 79419eab453..f46cb2c840b 100644
 --- a/sys/contrib/ncsw/Peripherals/FM/Port/fm_port.c
 +++ b/sys/contrib/ncsw/Peripherals/FM/Port/fm_port.c
 @@ -36,6 +36,9 @@
@@ -2395,6 +2419,15 @@ index 79419eab453..6faf7fa6b4c 100644
  #include "error_ext.h"
  #include "std_ext.h"
  #include "string_ext.h"
+@@ -1349,7 +1352,7 @@ static t_Error SetPcd(t_FmPort *p_FmPort, t_FmPortPcdParams *p_PcdParams)
+     }
+ 
+     /* if CC is used directly after BMI */
+-    if ((p_PcdParams->pcdSupport == e_FM_PORT_PCD_SUPPORT_CC_ONLY)
++    if (p_PcdParams->pcdSupport == e_FM_PORT_PCD_SUPPORT_CC_ONLY
+ #ifdef FM_CAPWAP_SUPPORT
+     || (p_PcdParams->pcdSupport == e_FM_PORT_PCD_SUPPORT_CC_AND_KG)
+     || (p_PcdParams->pcdSupport == e_FM_PORT_PCD_SUPPORT_CC_AND_KG_AND_PLCR)
 @@ -5271,6 +5274,7 @@ t_Error FM_PORT_SetPCD(t_Handle h_FmPort, t_FmPortPcdParams *p_PcdParam)
          RETURN_ERROR(MAJOR, err, NO_MSG);
      }
@@ -2403,8 +2436,17 @@ index 79419eab453..6faf7fa6b4c 100644
      RELEASE_LOCK(p_FmPort->lock);
  
      return err;
+@@ -5668,7 +5672,7 @@ static t_Error FmPortConfigAutoResForDeepSleepSupport1(t_FmPort *p_FmPort)
+     return E_OK;
+ }
+ 
+-t_FmPortDsarTablesSizes* FM_PORT_GetDsarTablesMaxSizes(t_Handle h_FmPortRx)
++static t_FmPortDsarTablesSizes* FM_PORT_GetDsarTablesMaxSizes(t_Handle h_FmPortRx)
+ {
+     t_FmPort *p_FmPort = (t_FmPort *)h_FmPortRx;
+     return p_FmPort->deepSleepVars.autoResMaxSizes;
 diff --git a/sys/contrib/ncsw/Peripherals/FM/fm_ncsw.c b/sys/contrib/ncsw/Peripherals/FM/fm_ncsw.c
-index 884bc45edd3..0bc43c79bcf 100644
+index 884bc45edd3..33915989b1e 100644
 --- a/sys/contrib/ncsw/Peripherals/FM/fm_ncsw.c
 +++ b/sys/contrib/ncsw/Peripherals/FM/fm_ncsw.c
 @@ -88,8 +88,11 @@ static bool IsFmanCtrlCodeLoaded(t_Fm *p_Fm)
@@ -2536,6 +2578,15 @@ index 884bc45edd3..0bc43c79bcf 100644
  t_Error FM_ModifyCounter(t_Handle h_Fm, e_FmCounters counter, uint32_t val)
  {
      t_Fm *p_Fm = (t_Fm*)h_Fm;
+@@ -5191,7 +5277,7 @@ t_Handle FmGetPcd(t_Handle h_Fm)
+ extern void *g_MemacRegs;
+ void fm_clk_down(void);
+ uint32_t fman_memac_get_event(void *regs, uint32_t ev_mask);
+-void FM_ChangeClock(t_Handle h_Fm, int hardwarePortId)
++static void FM_ChangeClock(t_Handle h_Fm, int hardwarePortId)
+ {
+ 	int macId;
+ 	uint32_t    event, rcr;
 diff --git a/sys/contrib/ncsw/Peripherals/FM/inc/fm_common.h b/sys/contrib/ncsw/Peripherals/FM/inc/fm_common.h
 index 81a25e976b6..354e7277389 100644
 --- a/sys/contrib/ncsw/Peripherals/FM/inc/fm_common.h
@@ -2777,7 +2828,7 @@ index a004dc55a67..a18ada7c719 100644
      t_QmExceptionsCallback      *f_Exception;
      t_Handle                    h_App;
 diff --git a/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c b/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c
-index 31313d37f97..706eeb5bfd0 100644
+index 31313d37f97..33d630fafa6 100644
 --- a/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c
 +++ b/sys/contrib/ncsw/Peripherals/QM/qm_portal_fqr.c
 @@ -1,6 +1,6 @@
@@ -3622,6 +3673,40 @@ index 31313d37f97..706eeb5bfd0 100644
  
      qmPortalEqcrPvbCommit(p_QmPortal->p_LowQmPortal,
                            (uint8_t)(QM_EQCR_VERB_CMD_ENQUEUE/* |
+@@ -2193,6 +2553,33 @@ t_Error QM_FQR_Enqueue(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffse
+     return E_OK;
+ }
+ 
++t_Error QM_PORTAL_EnqueueFqid(t_Handle h_QmPortal, uint32_t fqid, t_DpaaFD *p_Frame)
++{
++    t_QmPortal              *p_QmPortal;
++    struct qm_eqcr_entry    *p_Eq;
++
++    SANITY_CHECK_RETURN_ERROR(h_QmPortal, E_INVALID_HANDLE);
++    p_QmPortal = (t_QmPortal *)h_QmPortal;
++
++    NCSW_PLOCK(p_QmPortal);
++    p_Eq = try_eq_start(p_QmPortal);
++    if (!p_Eq)
++    {
++        PUNLOCK(p_QmPortal);
++        return ERROR_CODE(E_BUSY);
++    }
++
++    WRITE_UINT32(p_Eq->fqid, fqid);
++    WRITE_UINT32(p_Eq->tag, 0);
++    qm_fd_write(&p_Eq->fd, p_Frame);
++
++    qmPortalEqcrPvbCommit(p_QmPortal->p_LowQmPortal,
++                          (uint8_t)QM_EQCR_VERB_CMD_ENQUEUE);
++    PUNLOCK(p_QmPortal);
++
++    return E_OK;
++}
++
+ 
+ t_Error QM_FQR_PullFrame(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffset, t_DpaaFD *p_Frame)
+ {
 diff --git a/sys/contrib/ncsw/Peripherals/QM/qman_low.h b/sys/contrib/ncsw/Peripherals/QM/qman_low.h
 index 1becfc15554..687d58f210a 100644
 --- a/sys/contrib/ncsw/Peripherals/QM/qman_low.h
@@ -3968,10 +4053,10 @@ index e7c0c131fda..fae846e2b8c 100644
  #if defined(__MWERKS__) && !defined(__GNUC__)
 diff --git a/sys/contrib/ncsw/inc/Peripherals/fm_ehash.h b/sys/contrib/ncsw/inc/Peripherals/fm_ehash.h
 new file mode 100644
-index 00000000000..d09b7d4f18f
+index 00000000000..b2c5db4f106
 --- /dev/null
 +++ b/sys/contrib/ncsw/inc/Peripherals/fm_ehash.h
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,738 @@
 +/*
 + * Shadow fm_ehash.h — FMan External Hash Table API
 + *
@@ -4695,6 +4780,20 @@ index 00000000000..d09b7d4f18f
 +    uint32_t ctx_bpsize, uint32_t frag_bpid, uint32_t frag_size,
 +    uint32_t txc_fqid, uint32_t ipr_timer_freq);
 +
++/* Kernel-internal ehash API (called from fm_cc.c) */
++extern t_Handle ExternalHashTableSet(t_Handle h_FmPcd,
++    t_FmPcdHashTableParams *p_Param);
++extern void copy_td_to_ccbase(void *handle, t_Handle p_CcTreeTmp);
++extern t_Error ExternalHashTableModifyMissNextEngine(t_Handle h_HashTbl,
++    t_FmPcdCcNextEngineParams *p_FmPcdCcNextEngineParams);
++extern void ExternalHashTableDelete(t_Handle h_HashTbl);
++extern int ExternalHashReasslyTableExists(uint32_t type);
++
++/* CDX module exports */
++extern void ipr_update_timestamp(void);
++extern void cdx_ehash_update_timestamp(uint32_t id, uint32_t value);
++extern uint32_t cdx_ehash_get_timestamp_addr(uint32_t id);
++
 +#endif /* FM_EHASH_H */
 diff --git a/sys/contrib/ncsw/inc/Peripherals/fm_ext.h b/sys/contrib/ncsw/inc/Peripherals/fm_ext.h
 index c3633592694..d12600c89bf 100644
@@ -4772,9 +4871,17 @@ index 8d1c3d88945..488b4c81d79 100644
  
  /**************************************************************************//**
 diff --git a/sys/contrib/ncsw/inc/Peripherals/qm_ext.h b/sys/contrib/ncsw/inc/Peripherals/qm_ext.h
-index 6a4bc9fcfe6..2c0bbe320b4 100644
+index 6a4bc9fcfe6..9c20ee48d7c 100644
 --- a/sys/contrib/ncsw/inc/Peripherals/qm_ext.h
 +++ b/sys/contrib/ncsw/inc/Peripherals/qm_ext.h
+@@ -1,6 +1,6 @@
+ /******************************************************************************
+ 
+- � 1995-2003, 2004, 2005-2011 Freescale Semiconductor, Inc.
++ � 1995-2003, 2004, 2005-2011 Freescale Semiconductor, Inc.
+  All rights reserved.
+ 
+  This is proprietary source code of Freescale Semiconductor Inc.,
 @@ -258,6 +258,13 @@ typedef struct {
                                                           NOTE: this parameter relevant only when working with multiple partitions. */
      uint16_t                partNumOfCgs;           /**< Number of cgr's dedicated to this partition.
@@ -4829,6 +4936,28 @@ index 6a4bc9fcfe6..2c0bbe320b4 100644
 +
  /**************************************************************************//**
   @Function      QM_PORTAL_PollFrame
+ 
+@@ -1058,6 +1099,21 @@ uint32_t QM_FQR_GetCounter(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidO
+ *//***************************************************************************/
+ t_Error QM_FQR_Enqueue(t_Handle h_QmFqr, t_Handle h_QmPortal, uint32_t fqidOffset, t_DpaaFD *p_Frame);
+ 
++/**************************************************************************//**
++ @Function      QM_PORTAL_EnqueueFqid
++
++ @Description   Enqueue a frame to a specific FQID without requiring an FQR
++                handle.  Used for CEETM frame queues which are managed by
++                CEETM hardware rather than NCSW FQR.
++
++ @Param[in]     h_QmPortal      - A handle to a QM Portal Module.
++ @Param[in]     fqid            - The target Frame Queue ID.
++ @Param[in]     p_Frame         - Pointer to the frame to enqueue.
++
++ @Return        E_OK on success; Error code otherwise.
++*//***************************************************************************/
++t_Error QM_PORTAL_EnqueueFqid(t_Handle h_QmPortal, uint32_t fqid, t_DpaaFD *p_Frame);
++
+ /**************************************************************************//**
+  @Function      QM_FQR_PullFrame
  
 diff --git a/sys/contrib/ncsw/inc/core_ext.h b/sys/contrib/ncsw/inc/core_ext.h
 index ec89a6dde4c..8b4779672cc 100644
@@ -5272,10 +5401,10 @@ index 00000000000..552d6be43ca
 +}
 diff --git a/sys/contrib/ncsw/user/env/xx_arm64.c b/sys/contrib/ncsw/user/env/xx_arm64.c
 new file mode 100644
-index 00000000000..b3afd8b579e
+index 00000000000..25ece0021f5
 --- /dev/null
 +++ b/sys/contrib/ncsw/user/env/xx_arm64.c
-@@ -0,0 +1,794 @@
+@@ -0,0 +1,797 @@
 +/*-
 + * Copyright (c) 2011 Semihalf.
 + * Copyright (c) 2026 Mono Technologies Inc.
@@ -5543,6 +5672,8 @@ index 00000000000..b3afd8b579e
 + * Configure NAPI mode for a portal interrupt.  Must be called
 + * before QM_PORTAL_Init (which calls XX_SetIntr internally).
 + */
++void XX_ConfigPortalNapi(uintptr_t irq, struct taskqueue *tq, struct task *task);
++void XX_SetPortalNapiHandle(uintptr_t irq, t_Handle portal);
 +void
 +XX_ConfigPortalNapi(uintptr_t irq, struct taskqueue *tq, struct task *task)
 +{
@@ -6065,6 +6196,7 @@ index 00000000000..b3afd8b579e
 + * fm_clk_down() is referenced but defined under #ifdef TODO_SOC_SUSPEND
 + * in fm_port.c — never compiled.  g_MemacRegs is provided by memac.c.
 + */
++void fm_clk_down(void);
 +void
 +fm_clk_down(void)
 +{

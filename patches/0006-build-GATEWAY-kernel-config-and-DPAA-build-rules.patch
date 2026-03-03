@@ -1,4 +1,4 @@
-From db6e82a68e59fc9dc19dc39113eb6063e46cd8e9 Mon Sep 17 00:00:00 2001
+From 8c5de20b768da63c23320ca8bbb2c8ec7dc84c09 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:41:07 +0100
 Subject: [PATCH 6/6] build: GATEWAY kernel config and DPAA build rules

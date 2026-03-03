@@ -664,7 +664,7 @@ caam_detach(device_t dev)
 
 	sc = device_get_softc(dev);
 
-	bus_generic_detach(dev);
+	device_delete_children(dev);
 
 	rman_fini(&sc->sc_mem_rman);
 

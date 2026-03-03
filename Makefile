@@ -238,7 +238,8 @@ package: clean dist
 _NCPU!=		sysctl -n hw.ncpu 2>/dev/null || echo 4
 
 image:
-	@rm -f ${DISTDIR}/*.ko ${DISTDIR}/*.pkg ${DISTDIR}/*.img.gz ${DISTDIR}/fmc ${DISTDIR}/dpa_app ${DISTDIR}/cmm ${DISTDIR}/cmmctl ${DISTDIR}/fand ${DISTDIR}/kernel.img
+	@rm -rf ${DISTDIR}/*
+	@touch ${DISTDIR}/.keep
 	@# --- Early check: bail if opnsense-src has uncommitted changes ---
 	@if [ -d "${SRCDIR}/.git" ]; then \
 		if ! git -C ${SRCDIR} diff --quiet HEAD 2>/dev/null || \

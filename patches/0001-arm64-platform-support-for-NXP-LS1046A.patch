@@ -1,4 +1,4 @@
-From 8cb686bc5ebd0f81e3109a0b13f4a537eb1cbc21 Mon Sep 17 00:00:00 2001
+From 74011f023eac910eb92f79ee26f38bb8aae4a708 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:40:23 +0100
 Subject: [PATCH 1/6] arm64: platform support for NXP LS1046A

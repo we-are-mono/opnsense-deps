@@ -1,4 +1,4 @@
-From 70491a9024225b73a5531479784456f89916a356 Mon Sep 17 00:00:00 2001
+From aa364f8e75af98692cab39b44912c879cc1021aa Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:41:00 +0100
 Subject: [PATCH 5/6] dts: add Mono Gateway Development Kit device tree

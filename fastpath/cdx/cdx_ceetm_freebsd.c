@@ -27,6 +27,18 @@
 #include "module_qm.h"
 #include "cdx_ceetm_app.h"
 #include "cdx_common.h"
+#include "cdx_dpa_bridge.h"
+
+/* FreeBSD system headers needed by if_dtsec.h */
+#include <sys/param.h>
+#include <sys/malloc.h>
+#include <sys/bus.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <net/if_var.h>
+
+#include <contrib/ncsw/inc/Peripherals/fm_port_ext.h>
+#include <dev/dpaa/if_dtsec.h>
 
 /*
  * CEETM_SUCCESS, CEETM_FAILURE, ceetm_err, ceetm_dbg are all defined
@@ -95,25 +107,6 @@ ceetm_get_egressfq(void *ctx, uint32_t channel, uint32_t classque, uint32_t ff)
 	(void)ff;
 
 	return (fq);
-}
-
-/* ================================================================
- * ceetm_get_dscp_fq — return DSCP-mapped FQ from qm_ctx
- * ================================================================ */
-
-static struct qman_fq *
-ceetm_get_dscp_fq(void *ctx, uint8_t dscp)
-{
-	struct tQM_context_ctl *qm_ctx = (struct tQM_context_ctl *)ctx;
-
-	if (qm_ctx->dscp_fq_map == NULL)
-		return (NULL);
-	if (dscp >= MAX_DSCP) {
-		ceetm_err("invalid dscp value %u on tx iface <%s>\n",
-		    dscp, qm_ctx->iface_info->name);
-		return (NULL);
-	}
-	return (qm_ctx->dscp_fq_map->dscp_fq[dscp]);
 }
 
 /* ================================================================
@@ -967,9 +960,18 @@ ceetm_enable_or_disable_qos(struct tQM_context_ctl *qm_ctx, uint32_t oper)
 			/*
 			 * On Linux: dpa_enable_ceetm(qm_ctx->net_dev)
 			 * sets priv->ceetm_en = 1.  On FreeBSD,
-			 * qm_ctx->qos_enabled is checked directly.
+			 * qm_ctx->qos_enabled is checked directly,
+			 * and we also propagate to the kernel driver
+			 * for software-path DSCP FQ selection.
 			 */
 			qm_ctx->qos_enabled = 1;
+			{
+				struct dtsec_softc *sc;
+				sc = cdx_dpa_bridge_find_dtsec(
+				    (const char *)qm_ctx->iface_info->name);
+				if (sc != NULL)
+					sc->sc_ceetm_en = 1;
+			}
 			ceetm_dbg("CEETM enabled on iface %s\n",
 			    qm_ctx->iface_info->name);
 		} else {
@@ -1000,6 +1002,16 @@ ceetm_enable_or_disable_qos(struct tQM_context_ctl *qm_ctx, uint32_t oper)
 				}
 			}
 			qm_ctx->qos_enabled = 0;
+			{
+				struct dtsec_softc *sc;
+				sc = cdx_dpa_bridge_find_dtsec(
+				    (const char *)qm_ctx->iface_info->name);
+				if (sc != NULL) {
+					sc->sc_ceetm_en = 0;
+					memset(sc->sc_ceetm_dscp_fqid, 0,
+					    sizeof(sc->sc_ceetm_dscp_fqid));
+				}
+			}
 		} else {
 			ceetm_dbg("already disabled\n");
 		}
@@ -1432,6 +1444,7 @@ ceetm_enable_disable_dscp_fq_map(struct tQM_context_ctl *qm_ctx,
 static int
 dscp_fq_unmap(struct tQM_context_ctl *qm_ctx, uint8_t dscp)
 {
+	struct dtsec_softc *sc;
 
 	if (qm_ctx->dscp_fq_map == NULL) {
 		ceetm_err("dscp to fq map is not enabled on %s\n",
@@ -1439,6 +1452,13 @@ dscp_fq_unmap(struct tQM_context_ctl *qm_ctx, uint8_t dscp)
 		return (CEETM_FAILURE);
 	}
 	qm_ctx->dscp_fq_map->dscp_fq[dscp] = NULL;
+
+	/* Clear kernel driver entry */
+	sc = cdx_dpa_bridge_find_dtsec(
+	    (const char *)qm_ctx->iface_info->name);
+	if (sc != NULL)
+		sc->sc_ceetm_dscp_fqid[dscp] = 0;
+
 	return (CEETM_SUCCESS);
 }
 
@@ -1535,6 +1555,15 @@ ceetm_dscp_fq_map(struct tQM_context_ctl *qm_ctx, uint8_t dscp,
 		ceetm_err("failed to add dscp %u fq %u map on %s\n",
 		    dscp, egress_fq->fqid, qm_ctx->iface_info->name);
 		return (CEETM_FAILURE);
+	}
+
+	/* Propagate FQID to kernel driver for software-path TX */
+	{
+		struct dtsec_softc *sc;
+		sc = cdx_dpa_bridge_find_dtsec(
+		    (const char *)qm_ctx->iface_info->name);
+		if (sc != NULL)
+			sc->sc_ceetm_dscp_fqid[dscp] = egress_fq->fqid;
 	}
 
 	/* fast path get egress fq */

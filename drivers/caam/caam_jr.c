@@ -32,6 +32,7 @@
 #include <sys/malloc.h>
 #include <sys/module.h>
 #include <sys/mutex.h>
+#include <sys/proc.h>
 #include <sys/rman.h>
 #include <sys/taskqueue.h>
 
@@ -186,9 +187,11 @@ caam_jr_reset(struct caam_jr_softc *sc)
 		return (EIO);
 	}
 
-	/* Unmask interrupts */
-	JR_WRITE(sc, JR_JRCFGR_LS,
-	    JR_READ(sc, JR_JRCFGR_LS) & ~JRCFG_IMSK);
+	/*
+	 * Leave interrupts masked.  The caller unmasks after the ISR
+	 * is installed, preventing stale completion edges from reaching
+	 * the GIC before the handler is ready.
+	 */
 
 	return (0);
 }
@@ -325,9 +328,27 @@ caam_jr_task(void *arg, int pending)
 		}
 
 		if (sw_idx < 0) {
+			volatile uint8_t *raw =
+			    (volatile uint8_t *)&outring[hw_idx];
 			device_printf(sc->sc_dev,
 			    "completed desc PA 0x%jx not found in ring!\n",
 			    (uintmax_t)desc_pa);
+			device_printf(sc->sc_dev,
+			    "  hw_idx=%d head=%d tail=%d orsfr=%u "
+			    "polling=%d curthread=%s\n",
+			    hw_idx, head, tail, outused,
+			    sc->sc_polling, curthread->td_name);
+			device_printf(sc->sc_dev,
+			    "  raw=[%02x %02x %02x %02x %02x %02x %02x %02x"
+			    " %02x %02x %02x %02x]\n",
+			    raw[0], raw[1], raw[2], raw[3],
+			    raw[4], raw[5], raw[6], raw[7],
+			    raw[8], raw[9], raw[10], raw[11]);
+			if (head != tail)
+				device_printf(sc->sc_dev,
+				    "  entinfo[%d].desc_pa=0x%jx\n",
+				    tail,
+				    (uintmax_t)sc->sc_entinfo[tail].desc_pa);
 			goto ack;
 		}
 
@@ -380,8 +401,8 @@ ack:
 		}
 	}
 
-	/* Unmask interrupts (skip for polling-mode JR) */
-	if (!sc->sc_polling)
+	/* Unmask interrupts (skip for polling-mode JR and during attach) */
+	if (!sc->sc_polling && sc->sc_ihand != NULL)
 		JR_WRITE(sc, JR_JRCFGR_LS,
 		    JR_READ(sc, JR_JRCFGR_LS) & ~JRCFG_IMSK);
 }
@@ -646,17 +667,25 @@ caam_jr_attach(device_t dev)
 	}
 
 	/*
-	 * Clear stale NOP completion interrupt.  The NOP test polls the
-	 * output ring inline without an ISR, but CAAM still fires an
-	 * interrupt that the GIC latches.  If we install the ISR with
-	 * this stale interrupt pending, the ISR enqueues a taskqueue
-	 * task that races with the RNG's inline polling of the same
-	 * output ring — there is no output-ring lock.  Clearing JRINTR
-	 * before ISR installation ensures the ISR finds nothing pending.
+	 * Clear NOP completion interrupt status before unmasking.
+	 *
+	 * Interrupts have been masked (JRCFG_IMSK) since caam_jr_reset(),
+	 * so the NOP completion set JRINT_JR_INT in the status register
+	 * but never asserted the interrupt signal to the GIC.  Clear it
+	 * now so that unmasking doesn't immediately fire a stale edge.
 	 */
-	JR_WRITE(sc, JR_JRINTR, JRINT_JR_INT);
+	{
+		uint32_t jrintr = JR_READ(sc, JR_JRINTR);
+		uint32_t jrcfg = JR_READ(sc, JR_JRCFGR_LS);
+		device_printf(dev,
+		    "pre-ISR: JRINTR=0x%08x JRCFG=0x%08x (IMSK=%s JR_INT=%s)\n",
+		    jrintr, jrcfg,
+		    (jrcfg & JRCFG_IMSK) ? "yes" : "NO",
+		    (jrintr & JRINT_JR_INT) ? "pending" : "clear");
+		JR_WRITE(sc, JR_JRINTR, JRINT_JR_INT);
+	}
 
-	/* Setup interrupt handler (after NOP test to prevent race) */
+	/* Setup interrupt handler */
 	error = bus_setup_intr(dev, sc->sc_ires,
 	    INTR_TYPE_NET | INTR_MPSAFE, NULL, caam_jr_intr, sc,
 	    &sc->sc_ihand);
@@ -664,6 +693,10 @@ caam_jr_attach(device_t dev)
 		device_printf(dev, "cannot setup interrupt: %d\n", error);
 		goto fail;
 	}
+
+	/* Unmask interrupts now that ISR is installed */
+	JR_WRITE(sc, JR_JRCFGR_LS,
+	    JR_READ(sc, JR_JRCFGR_LS) & ~JRCFG_IMSK);
 
 	/*
 	 * Register hardware entropy source (first JR only).

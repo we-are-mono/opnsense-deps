@@ -1,4 +1,4 @@
-From 0ed47eee4ce82687d64b88ba888b1d18614350b4 Mon Sep 17 00:00:00 2001
+From e69821ae972777888b2f4645d46b27c504382a96 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:40:49 +0100
 Subject: [PATCH 3/6] dpaa: drivers and board peripherals for LS1046A
@@ -22,14 +22,14 @@ Subject: [PATCH 3/6] dpaa: drivers and board peripherals for LS1046A
  sys/dev/dpaa/fman_chardev.h      |  155 +++
  sys/dev/dpaa/fman_fdt.c          |   29 +-
  sys/dev/dpaa/if_dtsec.c          |  375 +++++-
- sys/dev/dpaa/if_dtsec.h          |   36 +-
+ sys/dev/dpaa/if_dtsec.h          |   40 +-
  sys/dev/dpaa/if_dtsec_fdt.c      |  123 +-
  sys/dev/dpaa/if_dtsec_im.c       |    3 +-
- sys/dev/dpaa/if_dtsec_rm.c       | 1296 ++++++++++++++++++---
+ sys/dev/dpaa/if_dtsec_rm.c       | 1355 ++++++++++++++++++---
  sys/dev/dpaa/if_dtsec_rm.h       |    6 +-
  sys/dev/dpaa/memac_mdio.c        |  328 ++++++
- sys/dev/dpaa/qman.c              |  355 +++++-
- sys/dev/dpaa/qman.h              |   37 +-
+ sys/dev/dpaa/qman.c              |  381 +++++-
+ sys/dev/dpaa/qman.h              |   47 +-
  sys/dev/dpaa/qman_ceetm.c        | 1874 ++++++++++++++++++++++++++++++
  sys/dev/dpaa/qman_ceetm.h        |  719 ++++++++++++
  sys/dev/dpaa/qman_fdt.c          |   19 +-
@@ -40,11 +40,11 @@ Subject: [PATCH 3/6] dpaa: drivers and board peripherals for LS1046A
  sys/dev/iicbus/mux/pca954x.c     |    1 +
  sys/dev/iicbus/ofw_iicbus.c      |    2 +-
  sys/dev/iicbus/sensor/ina2xx.c   |  399 +++++++
- sys/dev/mii/gpyphy.c             |  371 ++++++
+ sys/dev/mii/gpyphy.c             |  340 ++++++
  sys/dev/mii/miidevs              |   13 +
  sys/dev/random/random_harvestq.c |    1 +
  sys/dev/uart/uart_dev_ns8250.c   |   24 +
- 34 files changed, 9276 insertions(+), 317 deletions(-)
+ 34 files changed, 9344 insertions(+), 317 deletions(-)
  create mode 100644 sys/dev/dpaa/dpaa_oh.c
  create mode 100644 sys/dev/dpaa/dpaa_oh.h
  create mode 100644 sys/dev/dpaa/fman_chardev.c
@@ -4341,7 +4341,7 @@ index dfa76a47662..e98e2321f3e 100644
  }
  /** @} */
 diff --git a/sys/dev/dpaa/if_dtsec.h b/sys/dev/dpaa/if_dtsec.h
-index 4de0b776e9f..2e50a3a22f4 100644
+index 4de0b776e9f..48ee00f0ea7 100644
 --- a/sys/dev/dpaa/if_dtsec.h
 +++ b/sys/dev/dpaa/if_dtsec.h
 @@ -27,6 +27,8 @@
@@ -4371,7 +4371,7 @@ index 4de0b776e9f..2e50a3a22f4 100644
  	uintptr_t			sc_mac_mem_offset;
  	e_EnetMode			sc_mac_enet_mode;
  	int				sc_mac_mdio_irq;
-@@ -97,20 +103,38 @@ struct dtsec_softc {
+@@ -97,20 +103,42 @@ struct dtsec_softc {
  	uint8_t				sc_rx_bpid;
  	uma_zone_t			sc_rx_zone;
  	char				sc_rx_zname[64];
@@ -4412,10 +4412,14 @@ index 4de0b776e9f..2e50a3a22f4 100644
 +	t_Handle			sc_scheme;
 +	uint32_t			sc_rx_data_offset;
 +	t_Handle			sc_vsph;	/* default VSP handle */
++
++	/* CEETM DSCP-based egress QoS (populated by CDX module) */
++	volatile int			sc_ceetm_en;
++	uint32_t			sc_ceetm_dscp_fqid[64];
  };
  /** @} */
  
-@@ -124,7 +148,7 @@ enum dtsec_fm_port_params {
+@@ -124,7 +152,7 @@ enum dtsec_fm_port_params {
  	FM_PORT_LIODN_OFFSET 	= 0,
  	FM_PORT_MEM_ID		= 0,
  	FM_PORT_MEM_ATTR	= MEMORY_ATTR_CACHEABLE,
@@ -4659,7 +4663,7 @@ index fcde0df6030..0cd55dbc7c7 100644
  
  	if ((if_getdrvflags(sc->sc_ifnet) & IFF_DRV_RUNNING) != IFF_DRV_RUNNING)
 diff --git a/sys/dev/dpaa/if_dtsec_rm.c b/sys/dev/dpaa/if_dtsec_rm.c
-index b213a259b5b..abace4bd6b9 100644
+index b213a259b5b..8228378360d 100644
 --- a/sys/dev/dpaa/if_dtsec_rm.c
 +++ b/sys/dev/dpaa/if_dtsec_rm.c
 @@ -36,6 +36,8 @@
@@ -5454,14 +5458,19 @@ index b213a259b5b..abace4bd6b9 100644
 +	 * to satisfy the KeyGen alignment requirement.  The remaining
 +	 * 127 FQRs use force_fqid for contiguous FQIDs.
 +	 */
-+
+ 
+-	/* Default Frame Queue */
+-	fqr = qman_fqr_create(1, DTSEC_RM_FQR_RX_CHANNEL, DTSEC_RM_FQR_RX_WQ,
+-	    false, 0, false, false, true, false, 0, 0, 0);
 +	/* FQID 0: allocate with alignment to get contiguous base */
 +	fqr = qman_fqr_create(1,
 +	    (e_QmFQChannel)(e_QM_FQ_CHANNEL_SWPORTAL0),
 +	    DTSEC_RM_FQR_RX_WQ, false,
 +	    DTSEC_RX_QUEUES,  /* alignment */
 +	    false, false, true, false, 0, 0, 0);
-+	if (fqr == NULL) {
+ 	if (fqr == NULL) {
+-		device_printf(sc->sc_dev, "could not create default RX queue"
+-		    "\n");
 +		device_printf(sc->sc_dev,
 +		    "could not create aligned RX FQR for FQID 0\n");
 +		return (EIO);
@@ -5470,19 +5479,17 @@ index b213a259b5b..abace4bd6b9 100644
 +	sc->sc_rx_fqr[0] = fqr;
 +	base_fqid = qman_fqr_get_base_fqid(fqr);
 +	sc->sc_rx_fqid = base_fqid;
- 
--	/* Default Frame Queue */
--	fqr = qman_fqr_create(1, DTSEC_RM_FQR_RX_CHANNEL, DTSEC_RM_FQR_RX_WQ,
--	    false, 0, false, false, true, false, 0, 0, 0);
++
 +	error = qman_fqr_register_cb(fqr, dtsec_rm_fqr_rx_callback, sc);
 +	if (error != E_OK) {
 +		device_printf(sc->sc_dev,
 +		    "could not register RX callback for FQID 0\n");
 +		qman_fqr_free(fqr);
 +		sc->sc_rx_fqr[0] = NULL;
-+		return (EIO);
-+	}
-+
+ 		return (EIO);
+ 	}
+ 
+-	sc->sc_rx_fqr = fqr;
 +	/* FQIDs 1..N-1: force-allocate, round-robin across CPUs */
 +	for (i = 1; i < DTSEC_RX_QUEUES; i++) {
 +		e_QmFQChannel channel =
@@ -5528,14 +5535,11 @@ index b213a259b5b..abace4bd6b9 100644
 +	    DTSEC_RM_FQR_RX_WQ, false,
 +	    DTSEC_RX_QUEUES > 1 ? DTSEC_RX_QUEUES : 0,
 +	    false, false, true, false, 0, 0, 0);
- 	if (fqr == NULL) {
--		device_printf(sc->sc_dev, "could not create default RX queue"
--		    "\n");
++	if (fqr == NULL) {
 +		device_printf(sc->sc_dev, "could not create RX queue range\n");
- 		return (EIO);
- 	}
- 
--	sc->sc_rx_fqr = fqr;
++		return (EIO);
++	}
++
 +	sc->sc_rx_fqr[0] = fqr;
  	sc->sc_rx_fqid = qman_fqr_get_base_fqid(fqr);
  
@@ -5610,7 +5614,7 @@ index b213a259b5b..abace4bd6b9 100644
  	fqr = qman_fqr_create(1, DTSEC_RM_FQR_TX_CONF_CHANNEL,
  	    DTSEC_RM_FQR_TX_CONF_WQ, false, 0, false, false, true, false, 0, 0,
  	    0);
-@@ -524,129 +1087,554 @@ dtsec_rm_fqr_tx_init(struct dtsec_softc *sc)
+@@ -524,129 +1087,613 @@ dtsec_rm_fqr_tx_init(struct dtsec_softc *sc)
  		return (EIO);
  	}
  
@@ -5899,6 +5903,51 @@ index b213a259b5b..abace4bd6b9 100644
 + */
 +
 +/**
++ * Extract DSCP from the IP header of an Ethernet frame.
++ * Returns 0 for non-IP or unparseable frames (DSCP 0 maps to
++ * unmapped in the CEETM array, falling back to the default FQ).
++ */
++static inline uint8_t
++dtsec_rm_extract_dscp(struct mbuf *m)
++{
++	struct ether_header *eh;
++	uint16_t etype;
++	int ehlen;
++
++	if (__predict_false(m->m_len < (int)sizeof(*eh)))
++		return (0);
++
++	eh = mtod(m, struct ether_header *);
++	etype = ntohs(eh->ether_type);
++	ehlen = sizeof(*eh);
++
++	if (etype == ETHERTYPE_VLAN) {
++		if (__predict_false(m->m_len < ehlen + 4))
++			return (0);
++		etype = ntohs(*(uint16_t *)((char *)eh + ehlen + 2));
++		ehlen += 4;
++	}
++
++	if (etype == ETHERTYPE_IP) {
++		struct ip *ip;
++		if (__predict_false(m->m_len < ehlen + (int)sizeof(*ip)))
++			return (0);
++		ip = (struct ip *)((char *)eh + ehlen);
++		return ((ip->ip_tos >> 2) & 0x3f);
++	}
++
++	if (etype == ETHERTYPE_IPV6) {
++		struct ip6_hdr *ip6;
++		if (__predict_false(m->m_len < ehlen + (int)sizeof(*ip6)))
++			return (0);
++		ip6 = (struct ip6_hdr *)((char *)eh + ehlen);
++		return ((ntohl(ip6->ip6_flow) >> 22) & 0x3f);
++	}
++
++	return (0);
++}
++
++/**
 + * Modern if_transmit entry point for RM (Regular Mode).
 + *
 + * Each CPU builds the FD and enqueues to its own per-CPU TX FQ on its
@@ -5937,7 +5986,22 @@ index b213a259b5b..abace4bd6b9 100644
 +	/* Pin to current CPU for consistent FQ selection and portal use */
 +	sched_pin();
 +	cpu = curcpu % DTSEC_TX_NUM_FQS;
-+
+ 
+-	while (!if_sendq_empty(sc->sc_ifnet)) {
+-		/* Check length of the TX queue */
+-		qlen = qman_fqr_get_counter(sc->sc_tx_fqr, 0,
+-		    e_QM_FQR_COUNTERS_FRAME);
++	/* CEETM DSCP-based FQ selection for software-path packets */
++	uint32_t ceetm_fqid = 0;
++	if (__predict_false(sc->sc_ceetm_en)) {
++		uint8_t dscp = dtsec_rm_extract_dscp(m0);
++		ceetm_fqid = sc->sc_ceetm_dscp_fqid[dscp];
++	}
+ 
+-		if (qlen >= DTSEC_MAX_TX_QUEUE_LEN) {
+-			sc->sc_tx_fqr_full = 1;
+-			return;
+-		}
 +	/* Check per-CPU in-flight limit (software counter, no portal read) */
 +	if (__predict_false(atomic_load_int(&sc->sc_tx_inflight[cpu]) >=
 +	    DTSEC_MAX_TX_QUEUE_LEN)) {
@@ -5947,10 +6011,9 @@ index b213a259b5b..abace4bd6b9 100644
 +		return (ENOBUFS);
 +	}
  
--	while (!if_sendq_empty(sc->sc_ifnet)) {
--		/* Check length of the TX queue */
--		qlen = qman_fqr_get_counter(sc->sc_tx_fqr, 0,
--		    e_QM_FQR_COUNTERS_FRAME);
+-		fi = dtsec_rm_fi_alloc(sc);
+-		if (fi == NULL)
+-			return;
 +	fi = dtsec_rm_fi_alloc(sc);
 +	if (__predict_false(fi == NULL)) {
 +		sched_unpin();
@@ -5958,20 +6021,13 @@ index b213a259b5b..abace4bd6b9 100644
 +		if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
 +		return (ENOBUFS);
 +	}
- 
--		if (qlen >= DTSEC_MAX_TX_QUEUE_LEN) {
--			sc->sc_tx_fqr_full = 1;
--			return;
--		}
++
 +	fi->fi_cpu = cpu;
- 
--		fi = dtsec_rm_fi_alloc(sc);
--		if (fi == NULL)
--			return;
-+	fi->fi_tx_buf = NULL;
  
 -		m0 = if_dequeue(sc->sc_ifnet);
 -		if (m0 == NULL) {
++	fi->fi_tx_buf = NULL;
++
 +	/*
 +	 * TX checksum offload: build SG FD with buffer prefix
 +	 * containing parse result.  SG entries point directly to
@@ -6138,7 +6194,11 @@ index b213a259b5b..abace4bd6b9 100644
 +		DPAA_FD_SET_STATUS(&fd,
 +		    FM_FD_CMD_RPD | FM_FD_CMD_DTC);
 +
-+		error = qman_fqr_enqueue(sc->sc_tx_fqs[cpu], 0, &fd);
++		if (ceetm_fqid)
++			error = qman_enqueue_fqid(ceetm_fqid, &fd);
++		else
++			error = qman_fqr_enqueue(sc->sc_tx_fqs[cpu],
++			    0, &fd);
 +		if (__predict_false(error != E_OK)) {
 +			sched_unpin();
 +			if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
@@ -6146,14 +6206,15 @@ index b213a259b5b..abace4bd6b9 100644
  			dtsec_rm_fi_free(sc, fi);
  			m_freem(m0);
 +			return (EIO);
-+		}
+ 		}
+-		DTSEC_LOCK(sc);
 +
 +		atomic_add_int(&sc->sc_tx_inflight[cpu], 1);
 +		sched_unpin();
 +		if_inc_counter(ifp, IFCOUNTER_OPACKETS, 1);
 +		if_inc_counter(ifp, IFCOUNTER_OBYTES, psize);
 +		return (0);
-+	}
+ 	}
 +tx_sg_path:
 +
 +	/*
@@ -6198,12 +6259,11 @@ index b213a259b5b..abace4bd6b9 100644
 +			vaddr += ssize;
 +			psize += ssize;
 +			i++;
- 		}
--		DTSEC_LOCK(sc);
++		}
 +
 +		if (dsize > 0)
 +			break;
- 	}
++	}
 +
 +	/* Check if SG table was constructed properly */
 +	if (m != NULL || psize == 0) {
@@ -6223,7 +6283,10 @@ index b213a259b5b..abace4bd6b9 100644
 +	DPAA_FD_SET_OFFSET(&fd, 0);
 +	DPAA_FD_SET_STATUS(&fd, 0);
 +
-+	error = qman_fqr_enqueue(sc->sc_tx_fqs[cpu], 0, &fd);
++	if (ceetm_fqid)
++		error = qman_enqueue_fqid(ceetm_fqid, &fd);
++	else
++		error = qman_fqr_enqueue(sc->sc_tx_fqs[cpu], 0, &fd);
 +	if (__predict_false(error != E_OK)) {
 +		sched_unpin();
 +		if_inc_counter(ifp, IFCOUNTER_OERRORS, 1);
@@ -6598,7 +6661,7 @@ index 00000000000..cda5daae448
 +DRIVER_MODULE(miibus, memac_mdio, miibus_driver, 0, 0);
 +MODULE_DEPEND(memac_mdio, miibus, 1, 1, 1);
 diff --git a/sys/dev/dpaa/qman.c b/sys/dev/dpaa/qman.c
-index e9159f25d74..ccabb5819ef 100644
+index e9159f25d74..c51511ee455 100644
 --- a/sys/dev/dpaa/qman.c
 +++ b/sys/dev/dpaa/qman.c
 @@ -25,6 +25,8 @@
@@ -6679,7 +6742,7 @@ index e9159f25d74..ccabb5819ef 100644
  	return (e_RX_STORE_RESPONSE_CONTINUE);
  }
  
-@@ -144,14 +180,112 @@ qman_rejected_frame_callback(t_Handle app, t_Handle qm_fqr, t_Handle qm_portal,
+@@ -144,14 +180,114 @@ qman_rejected_frame_callback(t_Handle app, t_Handle qm_fqr, t_Handle qm_portal,
      uint32_t fqid_offset, t_DpaaFD *frame,
      t_QmRejectedFrameInfo *qm_rejected_frame_info)
  {
@@ -6713,6 +6776,8 @@ index e9159f25d74..ccabb5819ef 100644
 +#ifdef __aarch64__
 +MALLOC_DECLARE(M_NETCOMMSW);
 +
++void *qbman_alloc_reserved_mem(device_t dev, phandle_t mem_node,
++    uint32_t *out_size, const char *name);
 +void *
 +qbman_alloc_reserved_mem(device_t dev, phandle_t mem_node,
 +    uint32_t *out_size, const char *name)
@@ -6793,7 +6858,7 @@ index e9159f25d74..ccabb5819ef 100644
  int
  qman_attach(device_t dev)
  {
-@@ -191,9 +325,12 @@ qman_attach(device_t dev)
+@@ -191,9 +327,12 @@ qman_attach(device_t dev)
  	if (qp_sc == NULL)
  		goto err;
  
@@ -6806,7 +6871,7 @@ index e9159f25d74..ccabb5819ef 100644
  	qp.guestId = NCSW_MASTER_ID;
  	qp.baseAddress = rman_get_bushandle(sc->sc_rres);
  	qp.swPortalsBaseAddress = rman_get_bushandle(qp_sc->sc_rres[0]);
-@@ -209,6 +346,48 @@ qman_attach(device_t dev)
+@@ -209,6 +348,48 @@ qman_attach(device_t dev)
  	qp.partCgsBase = 0;
  	qp.partNumOfCgs = 0;
  
@@ -6855,7 +6920,7 @@ index e9159f25d74..ccabb5819ef 100644
  	sc->sc_qh = QM_Config(&qp);
  	if (sc->sc_qh == NULL) {
  		device_printf(dev, "could not be configured\n");
-@@ -230,9 +409,34 @@ qman_attach(device_t dev)
+@@ -230,9 +411,34 @@ qman_attach(device_t dev)
  	device_printf(dev, "Hardware version: %d.%d.\n",
  	    rev.majorRev, rev.minorRev);
  
@@ -6891,7 +6956,7 @@ index e9159f25d74..ccabb5819ef 100644
  
  	return (0);
  
-@@ -360,7 +564,73 @@ qman_fqr_create(uint32_t fqids_num, e_QmFQChannel channel, uint8_t wq,
+@@ -360,7 +566,73 @@ qman_fqr_create(uint32_t fqids_num, e_QmFQChannel channel, uint8_t wq,
  		goto err;
  	}
  
@@ -6966,7 +7031,7 @@ index e9159f25d74..ccabb5819ef 100644
  
  	sched_unpin();
  
-@@ -379,9 +649,11 @@ qman_fqr_free(t_Handle fqr)
+@@ -379,9 +651,11 @@ qman_fqr_free(t_Handle fqr)
  	t_Error error;
  
  	sc = qman_sc;
@@ -6981,7 +7046,38 @@ index e9159f25d74..ccabb5819ef 100644
  
  	error = QM_FQR_Free(fqr);
  
-@@ -545,7 +817,64 @@ qman_poll(e_QmPortalPollSource source)
+@@ -443,6 +717,30 @@ qman_fqr_enqueue(t_Handle fqr, uint32_t fqid_off, t_DpaaFD *frame)
+ 	return (error);
+ }
+ 
++t_Error
++qman_enqueue_fqid(uint32_t fqid, t_DpaaFD *frame)
++{
++	struct qman_softc *sc;
++	t_Error error;
++	t_Handle portal;
++
++	sc = qman_sc;
++	sched_pin();
++
++	portal = qman_portal_setup(sc);
++	if (portal == NULL) {
++		device_printf(sc->sc_dev, "could not setup QMan portal\n");
++		sched_unpin();
++		return (E_NOT_SUPPORTED);
++	}
++
++	error = QM_PORTAL_EnqueueFqid(portal, fqid, frame);
++
++	sched_unpin();
++
++	return (error);
++}
++
+ uint32_t
+ qman_fqr_get_counter(t_Handle fqr, uint32_t fqid_off,
+     e_QmFqrCounters counter)
+@@ -545,7 +843,64 @@ qman_poll(e_QmPortalPollSource source)
  }
  
  /*
@@ -7048,7 +7144,7 @@ index e9159f25d74..ccabb5819ef 100644
  
  /** @} */
 diff --git a/sys/dev/dpaa/qman.h b/sys/dev/dpaa/qman.h
-index 815ef1f6d33..ed00f4cb8d4 100644
+index 815ef1f6d33..ebf2124996a 100644
 --- a/sys/dev/dpaa/qman.h
 +++ b/sys/dev/dpaa/qman.h
 @@ -39,7 +39,7 @@
@@ -7069,7 +7165,24 @@ index 815ef1f6d33..ed00f4cb8d4 100644
  int qman_attach(device_t dev);
  int qman_detach(device_t dev);
  int qman_suspend(device_t dev);
-@@ -239,6 +241,39 @@ e_RxStoreResponse qman_rejected_frame_callback(t_Handle app, t_Handle qm_fqr,
+@@ -185,6 +187,16 @@ t_Error	qman_fqr_register_cb(t_Handle fqr, t_QmReceivedFrameCallback *callback,
+  */
+ t_Error qman_fqr_enqueue(t_Handle fqr, uint32_t fqid_off, t_DpaaFD *frame);
+ 
++/**
++ * Enqueue a frame to a specific FQID (bypassing FQR).
++ * Used for CEETM frame queues managed by CEETM hardware.
++ *
++ * @param fqid		Target Frame Queue ID.
++ * @param frame		A frame to be enqueued.
++ * @return		E_OK on success; error code otherwise.
++ */
++t_Error qman_enqueue_fqid(uint32_t fqid, t_DpaaFD *frame);
++
+ /**
+  * Get one of the FQR counter's value.
+  *
+@@ -239,6 +251,39 @@ e_RxStoreResponse qman_rejected_frame_callback(t_Handle app, t_Handle qm_fqr,
      t_Handle qm_portal, uint32_t fqid_offset, t_DpaaFD *frame,
      t_QmRejectedFrameInfo *qm_rejected_frame_info);
  
@@ -10663,10 +10776,10 @@ index 00000000000..1554ba75236
 +IICBUS_FDT_PNP_INFO(compat_data);
 diff --git a/sys/dev/mii/gpyphy.c b/sys/dev/mii/gpyphy.c
 new file mode 100644
-index 00000000000..6357000a4e6
+index 00000000000..4df46c0975f
 --- /dev/null
 +++ b/sys/dev/mii/gpyphy.c
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,340 @@
 +/*-
 + * Copyright (c) 2026 Mono Technologies Inc.
 + * All rights reserved.
@@ -10748,21 +10861,6 @@ index 00000000000..6357000a4e6
 +#define	VSPEC1_SGMII_CTRL	0x08
 +#define	VSPEC1_SGMII_CTRL_ANEN	(1 << 12)	/* SGMII AN enable */
 +#define	VSPEC1_SGMII_CTRL_ANRS	(1 << 9)	/* SGMII AN restart */
-+
-+/*
-+ * Firmware versions that need SGMII AN re-trigger workaround.
-+ * If firmware is older than these, SGMII AN must be manually
-+ * restarted on link-up because the PHY won't re-trigger it
-+ * when link partner speed hasn't changed.
-+ */
-+static const struct {
-+	int major;
-+	int minor;
-+} gpy_sgmii_reaneg_ver[] = {
-+	{ 7, 0x6D },
-+	{ 8, 0x6D },
-+	{ 9, 0x73 },
-+};
 +
 +struct gpyphy_softc {
 +	struct mii_softc mii_sc;
@@ -10862,22 +10960,6 @@ index 00000000000..6357000a4e6
 +	val = gpyphy_mmd_read(sc, MDIO_MMD_VEND1, VSPEC1_SGMII_CTRL);
 +	val |= VSPEC1_SGMII_CTRL_ANEN | VSPEC1_SGMII_CTRL_ANRS;
 +	gpyphy_mmd_write(sc, MDIO_MMD_VEND1, VSPEC1_SGMII_CTRL, val);
-+}
-+
-+static bool
-+gpyphy_need_sgmii_reaneg(struct gpyphy_softc *gsc)
-+{
-+	size_t i;
-+
-+	for (i = 0; i < nitems(gpy_sgmii_reaneg_ver); i++) {
-+		if (gsc->fw_major != gpy_sgmii_reaneg_ver[i].major)
-+			continue;
-+		if (gsc->fw_minor < gpy_sgmii_reaneg_ver[i].minor)
-+			return (true);
-+		break;
-+	}
-+
-+	return (false);
 +}
 +
 +static int

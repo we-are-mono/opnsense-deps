@@ -1,4 +1,4 @@
-From 2eb6011a97595732fe6818c9d5f81b48d17eb6e3 Mon Sep 17 00:00:00 2001
+From b3ea00b19a46e600f5bdd202cbfa55a233a1e324 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:40:55 +0100
 Subject: [PATCH 4/6] net: bridge and pf hooks for hardware flow offload
