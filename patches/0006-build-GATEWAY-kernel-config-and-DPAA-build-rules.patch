@@ -1,4 +1,4 @@
-From 3a16d0493cab9b13c36c21da4154c1486ed27d9a Mon Sep 17 00:00:00 2001
+From db6e82a68e59fc9dc19dc39113eb6063e46cd8e9 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:41:07 +0100
 Subject: [PATCH 6/6] build: GATEWAY kernel config and DPAA build rules
@@ -8,23 +8,23 @@ Subject: [PATCH 6/6] build: GATEWAY kernel config and DPAA build rules
 - conf/files, files.arm64: new driver entries (gpyphy, ina2xx, etc.)
 - conf/options: DPAA_FAST_PATH option
 ---
- sys/arm64/conf/GATEWAY                |  86 +++++++++++++++++
+ sys/arm64/conf/GATEWAY                |  89 +++++++++++++++++
  sys/arm64/conf/dpaa/config.dpaa_arm64 |  29 ++++++
  sys/arm64/conf/dpaa/files.dpaa_arm64  | 131 ++++++++++++++++++++++++++
  sys/conf/files                        |   2 +
  sys/conf/files.arm64                  |   4 +-
  sys/conf/options                      |   1 +
- 6 files changed, 251 insertions(+), 2 deletions(-)
+ 6 files changed, 254 insertions(+), 2 deletions(-)
  create mode 100644 sys/arm64/conf/GATEWAY
  create mode 100644 sys/arm64/conf/dpaa/config.dpaa_arm64
  create mode 100644 sys/arm64/conf/dpaa/files.dpaa_arm64
 
 diff --git a/sys/arm64/conf/GATEWAY b/sys/arm64/conf/GATEWAY
 new file mode 100644
-index 00000000000..4962c5e19f4
+index 00000000000..30b5f498061
 --- /dev/null
 +++ b/sys/arm64/conf/GATEWAY
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,89 @@
 +#
 +# MONO-GATEWAY -- NXP LS1046A with DPAA1 + CAAM for OPNsense
 +#
@@ -76,6 +76,9 @@ index 00000000000..4962c5e19f4
 +device		pca954x		# NXP PCA9545/9546/9548 I2C mux/switch
 +device		ina2xx			# TI INA219/INA226/INA234 power monitor
 +# pcf2131 is built as an out-of-tree module in opnsense-deps/drivers/pcf2131/
++
++# GPIO power-off (STUSB4500 USB-C PD reset)
++device		gpiopower
 +
 +# DPAA1 (FMan/QMan/BMan) -- NXP LS1046A packet acceleration
 +include		"dpaa/config.dpaa_arm64"

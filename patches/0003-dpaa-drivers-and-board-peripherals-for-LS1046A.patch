@@ -1,4 +1,4 @@
-From 38799c21f444895a429fdf4ed9bc0c538498c46e Mon Sep 17 00:00:00 2001
+From 0ed47eee4ce82687d64b88ba888b1d18614350b4 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:40:49 +0100
 Subject: [PATCH 3/6] dpaa: drivers and board peripherals for LS1046A
@@ -34,6 +34,7 @@ Subject: [PATCH 3/6] dpaa: drivers and board peripherals for LS1046A
  sys/dev/dpaa/qman_ceetm.h        |  719 ++++++++++++
  sys/dev/dpaa/qman_fdt.c          |   19 +-
  sys/dev/dpaa/qman_portals.c      |  256 +++-
+ sys/dev/gpio/gpiopower.c         |    2 +-
  sys/dev/gpio/qoriq_gpio.c        |   59 +-
  sys/dev/iicbus/mux/iicmux.c      |    3 +-
  sys/dev/iicbus/mux/pca954x.c     |    1 +
@@ -43,7 +44,7 @@ Subject: [PATCH 3/6] dpaa: drivers and board peripherals for LS1046A
  sys/dev/mii/miidevs              |   13 +
  sys/dev/random/random_harvestq.c |    1 +
  sys/dev/uart/uart_dev_ns8250.c   |   24 +
- 33 files changed, 9275 insertions(+), 316 deletions(-)
+ 34 files changed, 9276 insertions(+), 317 deletions(-)
  create mode 100644 sys/dev/dpaa/dpaa_oh.c
  create mode 100644 sys/dev/dpaa/dpaa_oh.h
  create mode 100644 sys/dev/dpaa/fman_chardev.c
@@ -10065,6 +10066,19 @@ index 76d89784ab5..625471026ff 100644
 +	}
 +}
 +#endif
+diff --git a/sys/dev/gpio/gpiopower.c b/sys/dev/gpio/gpiopower.c
+index 2f09f79850d..f8bd306ec41 100644
+--- a/sys/dev/gpio/gpiopower.c
++++ b/sys/dev/gpio/gpiopower.c
+@@ -98,7 +98,7 @@ gpiopower_attach(device_t dev)
+ 		sc->sc_timeout = fdt32_to_cpu(prop) * 1000;
+ 
+ 	EVENTHANDLER_REGISTER(shutdown_final, gpiopower_assert, dev,
+-	    SHUTDOWN_PRI_LAST);
++	    SHUTDOWN_PRI_LAST - 1);
+ 
+ 	return (0);
+ }
 diff --git a/sys/dev/gpio/qoriq_gpio.c b/sys/dev/gpio/qoriq_gpio.c
 index 5dabe03b775..c67e704effd 100644
 --- a/sys/dev/gpio/qoriq_gpio.c

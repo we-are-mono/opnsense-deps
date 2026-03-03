@@ -1,4 +1,4 @@
-From 43111d802dca891fc26e034f38eccd81d6a54f76 Mon Sep 17 00:00:00 2001
+From c63286c176669bda9853aaa607197e936d8b0023 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:40:37 +0100
 Subject: [PATCH 2/6] ncsw: port DPAA1 NCSW layer to ARM64

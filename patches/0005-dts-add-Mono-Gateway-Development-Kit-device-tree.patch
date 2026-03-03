@@ -1,4 +1,4 @@
-From ab8403264cea5fda686d29f50330e86832c1c6c8 Mon Sep 17 00:00:00 2001
+From 70491a9024225b73a5531479784456f89916a356 Mon Sep 17 00:00:00 2001
 From: Tomaz Zaman <tomaz@mono.si>
 Date: Mon, 2 Mar 2026 12:41:00 +0100
 Subject: [PATCH 5/6] dts: add Mono Gateway Development Kit device tree
@@ -6,17 +6,17 @@ Subject: [PATCH 5/6] dts: add Mono Gateway Development Kit device tree
 - mono-gateway-dk.dts: full board DTS for LS1046A GDK
 - DTB Makefile: add mono-gateway-dk to freescale build list
 ---
- .../src/arm64/freescale/mono-gateway-dk.dts   | 434 ++++++++++++++++++
+ .../src/arm64/freescale/mono-gateway-dk.dts   | 444 ++++++++++++++++++
  sys/modules/dtb/freescale/Makefile            |  40 +-
- 2 files changed, 472 insertions(+), 2 deletions(-)
+ 2 files changed, 482 insertions(+), 2 deletions(-)
  create mode 100644 sys/contrib/device-tree/src/arm64/freescale/mono-gateway-dk.dts
 
 diff --git a/sys/contrib/device-tree/src/arm64/freescale/mono-gateway-dk.dts b/sys/contrib/device-tree/src/arm64/freescale/mono-gateway-dk.dts
 new file mode 100644
-index 00000000000..3058f5e9d02
+index 00000000000..3e3a9839fd5
 --- /dev/null
 +++ b/sys/contrib/device-tree/src/arm64/freescale/mono-gateway-dk.dts
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,444 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Device Tree for Mono Gateway DK (NXP LS1046A)
@@ -88,6 +88,14 @@ index 00000000000..3058f5e9d02
 +		compatible = "mono,sfp-led";
 +		sfp-ports = <&sfp_xfi0>, <&sfp_xfi1>;
 +	};
++
++};
++
++&soc {
++	gpio-poweroff {
++		compatible = "gpio-poweroff";
++		gpios = <&gpio2 21 GPIO_ACTIVE_HIGH>;
++	};
 +};
 +
 +&duart0 {
@@ -130,6 +138,7 @@ index 00000000000..3058f5e9d02
 +			temp-sensor@4c {
 +				compatible = "ti,tmp431";
 +				reg = <0x4c>;
++				label = "cpu-board";
 +			};
 +		};
 +
@@ -141,6 +150,7 @@ index 00000000000..3058f5e9d02
 +			temp-sensor@4c {
 +				compatible = "ti,tmp431";
 +				reg = <0x4c>;
++				label = "network-board";
 +			};
 +		};
 +
