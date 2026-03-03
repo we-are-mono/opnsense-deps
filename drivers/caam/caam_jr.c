@@ -624,7 +624,28 @@ caam_jr_attach(device_t dev)
 	taskqueue_start_threads(&sc->sc_taskq, 1, PI_NET, "%s",
 	    device_get_nameunit(dev));
 
-	/* Setup interrupt handler */
+	device_printf(dev, "ring depth %d, input PA 0x%jx, output PA 0x%jx\n",
+	    CAAM_JR_DEPTH,
+	    (uintmax_t)sc->sc_inpring.paddr,
+	    (uintmax_t)sc->sc_outring.paddr);
+
+	/*
+	 * Run NOP test to verify ring operation BEFORE installing the
+	 * interrupt handler.  The NOP test polls the output ring inline.
+	 * If the ISR is already registered, the CAAM completion interrupt
+	 * triggers the taskqueue handler on another CPU, racing with the
+	 * inline poll on this CPU.  Both call caam_jr_task() and advance
+	 * sc_out_ridx, leaving it permanently off-by-one.  Every subsequent
+	 * completion is then read from the wrong slot (zeros), producing
+	 * "completed desc PA 0x0 not found in ring" on every RNG attempt.
+	 */
+	error = caam_jr_test_nop(sc);
+	if (error != 0) {
+		device_printf(dev, "NOP test failed: %d\n", error);
+		goto fail;
+	}
+
+	/* Setup interrupt handler (after NOP test to prevent race) */
 	error = bus_setup_intr(dev, sc->sc_ires,
 	    INTR_TYPE_NET | INTR_MPSAFE, NULL, caam_jr_intr, sc,
 	    &sc->sc_ihand);
@@ -632,14 +653,6 @@ caam_jr_attach(device_t dev)
 		device_printf(dev, "cannot setup interrupt: %d\n", error);
 		goto fail;
 	}
-
-	device_printf(dev, "ring depth %d, input PA 0x%jx, output PA 0x%jx\n",
-	    CAAM_JR_DEPTH,
-	    (uintmax_t)sc->sc_inpring.paddr,
-	    (uintmax_t)sc->sc_outring.paddr);
-
-	/* Run NOP test to verify ring operation */
-	caam_jr_test_nop(sc);
 
 	/*
 	 * Register hardware entropy source (first JR only).

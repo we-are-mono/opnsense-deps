@@ -175,13 +175,15 @@ caam_rng_generate(void)
  * ~1.5% during the initial health-test phase (1024 samples, ~10s)
  * and drops to <0.2% once Fortuna is seeded (4 calls/iteration).
  */
+extern int rebooting;
+
 static u_int
 caam_rng_read(void *buf, u_int c)
 {
 	sbintime_t now;
 	int got;
 
-	if (caam_rng.failed)
+	if (caam_rng.failed || rebooting)
 		return (0);
 
 	if (c > CAAM_RNG_OUTSIZE)
