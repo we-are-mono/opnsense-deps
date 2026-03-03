@@ -510,8 +510,8 @@ index 871c15330fe..22712ad7bb3 100644
 +	freescale/fsl-lx2160a-rdb.dts \
 +	freescale/fsl-lx2162a-qds.dts \
 +	freescale/mono-gateway-dk.dts
- 
+
  .include <bsd.dtb.mk>
--- 
+--
 2.47.3
 
