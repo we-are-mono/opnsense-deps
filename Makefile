@@ -99,10 +99,10 @@ build-pcf2131:
 build-caam:
 	${MAKE} -C ${KMOD_CAAM} ${KMOD_ARGS}
 
-modules: build-cdx build-fci build-auto_bridge build-pf_notify \
 build-tmp431:
 	${MAKE} -C ${KMOD_TMP} ${KMOD_ARGS}
 
+modules: build-cdx build-fci build-auto_bridge build-pf_notify \
 	 build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
 	 build-caam build-tmp431
 
@@ -202,6 +202,9 @@ package: clean dist
 	# rc.syshook early scripts
 	install -m 755 ${PKG_RCDDIR}/01-growfs ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
 	install -m 755 ${PKG_RCDDIR}/02-mono-modules ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
+	# OPNsense plugin files (hwmon dashboard widget)
+	cp -R ${OPSDIR}/plugins/hwmon/src/opnsense/ ${PKG_STAGEDIR}/usr/local/opnsense/
+	chmod 755 ${PKG_STAGEDIR}/usr/local/opnsense/scripts/hwmon/sensors.py
 	# Generate manifest with version
 	sed 's/%%VERSION%%/${PKG_VERSION}/' ${PKG_METADIR}/+MANIFEST \
 	    > ${PKG_STAGEDIR}/+MANIFEST

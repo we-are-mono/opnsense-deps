@@ -48,7 +48,7 @@
 #define	EMC2305_RPM_FACTOR		3932160
 #define	EMC2305_TACH_SHIFT		3	/* lower 3 bits unused */
 #define	EMC2305_TACH_MULTIPLIER		2
-#define	EMC2305_RPM_MIN			480
+#define	EMC2305_RPM_MIN			1000	/* stalled/missing fans read ~960 */
 
 #define	EMC2305_MAX_FANS		5
 

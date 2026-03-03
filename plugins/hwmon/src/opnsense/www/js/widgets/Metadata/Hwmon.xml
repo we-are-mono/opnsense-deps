@@ -1,0 +1,15 @@
+<metadata>
+    <hwmon>
+        <filename>Hwmon.js</filename>
+        <endpoints>
+            <endpoint>/api/hwmon/sensors/status</endpoint>
+        </endpoints>
+        <translations>
+            <title>Hardware Monitor</title>
+            <power>Power</power>
+            <fans>Fans</fans>
+            <temperatures>Temperatures</temperatures>
+            <nosensors>No hardware sensors detected.</nosensors>
+        </translations>
+    </hwmon>
+</metadata>

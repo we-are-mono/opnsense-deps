@@ -1,0 +1,8 @@
+<acl>
+    <page-hwmon-sensors>
+        <name>Diagnostics: Hardware Monitor</name>
+        <patterns>
+            <pattern>api/hwmon/*</pattern>
+        </patterns>
+    </page-hwmon-sensors>
+</acl>
