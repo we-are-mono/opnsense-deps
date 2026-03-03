@@ -41,6 +41,20 @@ opnsense-deps/
 └── Makefile              # top-level build (modules + userspace + package)
 ```
 
+## Network interface mapping
+
+The FMan MAC numbering in the device tree does not match the physical port order
+on the board. This is a cosmetic mismatch in the PCB routing — it has no effect
+on performance or functionality.
+
+| Physical position (left → right) | Interface | Speed |
+|----------------------------------|-----------|-------|
+| Port 1 | dtsec1 | 1 GbE |
+| Port 2 | dtsec2 | 1 GbE |
+| Port 3 | dtsec0 | 1 GbE |
+| Port 4 | dtsec3 | 10 GbE SFP+ |
+| Port 5 | dtsec4 | 10 GbE SFP+ |
+
 ## Build instructions
 
 All commands run on the build server (amd64 FreeBSD).
