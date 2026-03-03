@@ -643,7 +643,6 @@ caam_attach(device_t dev)
 	simplebus_init(dev, node);
 	simplebus_fill_ranges(node, &sc->sc_base);
 
-	bus_identify_children(dev);
 	for (node = OF_child(ofw_bus_get_node(dev)); node > 0;
 	    node = OF_peer(node)) {
 		simplebus_add_device(dev, node, 0, NULL, -1, NULL);

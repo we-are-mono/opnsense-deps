@@ -6,6 +6,9 @@
 # Clean all build artifacts:
 #   make -C /build/opnsense-deps clean
 #
+# Build full image (clones repos, patches, kernel, modules, image):
+#   make -C /build/opnsense-deps image
+#
 # Build subsets:
 #   make -C /build/opnsense-deps modules    # kernel modules only
 #   make -C /build/opnsense-deps userspace   # userspace only
@@ -22,8 +25,16 @@ DRIVERS=	${OPSDIR}/drivers
 
 # Cross-compilation settings (all ?= for easy override)
 SRCTOP?=	/build
-SYSROOT?=	/usr/obj${SRCTOP}/opnsense-src/arm64.aarch64/tmp
-KERNBUILDDIR?=	/usr/obj${SRCTOP}/opnsense-src/arm64.aarch64/sys/GATEWAY
+SRCDIR=		${SRCTOP}/opnsense-src
+BUILDTOOL=	${SRCTOP}/opnsense-build
+SYSROOT?=	/usr/obj${SRCDIR}/arm64.aarch64/tmp
+KERNBUILDDIR?=	/usr/obj${SRCDIR}/arm64.aarch64/sys/GATEWAY
+
+# OPNsense build settings
+OPS_SETTINGS?=	26.1
+OPS_BRANCH=	stable/${OPS_SETTINGS}
+IMAGESDIR=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/images
+SETSDIR=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/sets
 
 # Common args for all kernel module builds
 # Host clang cross-compiles with explicit --target (bsd.kmod.mk does NOT add it)
@@ -36,6 +47,12 @@ BUILDDIR?=	${OPSDIR}/_build
 
 # Output directory for all final artifacts
 DISTDIR?=	${OPSDIR}/dist
+
+# libxml2 aarch64 package for cross-compilation sysroot (fmc links against it).
+# pkg.FreeBSD.org blocks directory listings, so we fetch by exact filename.
+# Update this when the FreeBSD ports tree bumps libxml2.
+LIBXML2_PKG?=	libxml2-2.15.1_1.pkg
+LIBXML2_URL=	https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/${LIBXML2_PKG}
 
 # Package version: derived from git tags (e.g., tag "26.1.2" + 3 commits = "26.1.2_3")
 # Override: make package PKG_VERSION=26.1.2.1
@@ -215,6 +232,84 @@ package: clean dist
 	@echo "==> Package: ${DISTDIR}/mono-gateway-${PKG_VERSION}.pkg"
 
 # ============================================================
+# Full image build (clones repos, applies patches, builds everything)
+# ============================================================
+
+_NCPU!=		sysctl -n hw.ncpu 2>/dev/null || echo 4
+
+image:
+	@rm -f ${DISTDIR}/*.ko ${DISTDIR}/*.pkg ${DISTDIR}/*.img.gz ${DISTDIR}/fmc ${DISTDIR}/dpa_app ${DISTDIR}/cmm ${DISTDIR}/cmmctl ${DISTDIR}/fand ${DISTDIR}/kernel.img
+	@# --- Early check: bail if opnsense-src has uncommitted changes ---
+	@if [ -d "${SRCDIR}/.git" ]; then \
+		if ! git -C ${SRCDIR} diff --quiet HEAD 2>/dev/null || \
+		   ! git -C ${SRCDIR} diff --cached --quiet HEAD 2>/dev/null; then \
+			echo "ERROR: ${SRCDIR} has uncommitted changes."; \
+			echo "Commit or stash before running 'make image'."; \
+			exit 1; \
+		fi; \
+	fi
+	@echo "==> Step 1: Checking repositories"
+	@test -d ${SRCDIR}/.git || git clone https://github.com/opnsense/src.git ${SRCDIR}
+	@test -d ${BUILDTOOL}/.git || git clone https://github.com/maurice-w/opnsense-vm-images.git ${BUILDTOOL}
+	@cp -n ${OPSDIR}/config/GATEWAY.conf ${BUILDTOOL}/device/ 2>/dev/null || true
+	@echo "==> Step 2: Applying kernel patches"
+	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && \
+		git reset --hard origin/${OPS_BRANCH} && \
+		git am ${OPSDIR}/patches/*.patch
+	@echo "==> Step 3: Building kernel (clean)"
+	sudo rm -f ${SETSDIR}/kernel-*-GATEWAY.txz
+	sudo chflags -R noschg /usr/obj${SRCDIR}/arm64.aarch64 2>/dev/null || true
+	sudo rm -rf /usr/obj${SRCDIR}/arm64.aarch64
+	sudo ${MAKE} -C ${BUILDTOOL} kernel \
+		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
+		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
+	@echo "==> Step 3a: Populating sysroot from base set"
+	@_base=$$(ls ${SETSDIR}/base-*-aarch64-GATEWAY.txz 2>/dev/null | head -1); \
+	if [ -z "$$_base" ]; then \
+		echo "ERROR: no base set found in ${SETSDIR}"; exit 1; \
+	fi; \
+	echo "    extracting headers and libraries from $$(basename $$_base)"; \
+	sudo tar xf "$$_base" -C ${SYSROOT} --no-fflags \
+		--include='./usr/include/*' \
+		--include='./usr/lib/*.a' \
+		--include='./usr/lib/*.so' \
+		--include='./usr/lib/*.o' \
+		--include='./lib/*.so*'
+	@echo "==> Step 3b: Installing libxml2 into sysroot"
+	@if [ ! -f ${SYSROOT}/usr/local/lib/libxml2.so ]; then \
+		sudo rm -f /tmp/libxml2.pkg; \
+		fetch -qo /tmp/libxml2.pkg '${LIBXML2_URL}'; \
+		rm -rf /tmp/libxml2-extract; \
+		mkdir -p /tmp/libxml2-extract; \
+		tar xf /tmp/libxml2.pkg -C /tmp/libxml2-extract; \
+		sudo mkdir -p ${SYSROOT}/usr/local/include ${SYSROOT}/usr/local/lib; \
+		sudo cp -r /tmp/libxml2-extract/usr/local/include/libxml2 \
+			${SYSROOT}/usr/local/include/; \
+		sudo cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* \
+			${SYSROOT}/usr/local/lib/; \
+		rm -rf /tmp/libxml2-extract /tmp/libxml2.pkg; \
+		echo "    libxml2 installed into sysroot"; \
+	else \
+		echo "    libxml2 already in sysroot"; \
+	fi
+	@echo "==> Step 4: Building modules and userspace"
+	${MAKE} -C ${OPSDIR} -j${_NCPU} all
+	@echo "==> Step 5: Building package"
+	${MAKE} -C ${OPSDIR} package
+	@echo "==> Step 6: Assembling image"
+	sudo rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
+		${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz
+	sudo ${MAKE} -C ${BUILDTOOL} arm-5G \
+		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
+		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
+	@echo "==> Step 7: Compressing and copying to dist/"
+	@mkdir -p ${DISTDIR}
+	sudo gzip -k ${IMAGESDIR}/OPNsense-*-GATEWAY.img
+	cp ${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz ${DISTDIR}/
+	@echo "==> Image ready:"
+	@ls -lh ${DISTDIR}/OPNsense-*-GATEWAY.img.gz
+
+# ============================================================
 # Clean
 # ============================================================
 
@@ -232,7 +327,7 @@ clean:
 	${MAKE} -C ${KMOD_TMP} ${KMOD_ARGS} clean
 	rm -rf ${BUILDDIR}
 
-.PHONY: all modules userspace dist package clean \
+.PHONY: all modules userspace dist package image clean \
 	build-cdx build-fci build-auto_bridge build-pf_notify \
 	build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
 	build-caam build-tmp431 \

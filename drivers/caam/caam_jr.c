@@ -645,6 +645,17 @@ caam_jr_attach(device_t dev)
 		goto fail;
 	}
 
+	/*
+	 * Clear stale NOP completion interrupt.  The NOP test polls the
+	 * output ring inline without an ISR, but CAAM still fires an
+	 * interrupt that the GIC latches.  If we install the ISR with
+	 * this stale interrupt pending, the ISR enqueues a taskqueue
+	 * task that races with the RNG's inline polling of the same
+	 * output ring — there is no output-ring lock.  Clearing JRINTR
+	 * before ISR installation ensures the ISR finds nothing pending.
+	 */
+	JR_WRITE(sc, JR_JRINTR, JRINT_JR_INT);
+
 	/* Setup interrupt handler (after NOP test to prevent race) */
 	error = bus_setup_intr(dev, sc->sc_ires,
 	    INTR_TYPE_NET | INTR_MPSAFE, NULL, caam_jr_intr, sc,

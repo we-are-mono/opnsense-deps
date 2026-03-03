@@ -721,5 +721,8 @@ extern int ExternalHashSetReasslyPool(uint32_t type, uint32_t ctx_bpid,
     uint32_t ctx_bpsize, uint32_t frag_bpid, uint32_t frag_size,
     uint32_t txc_fqid, uint32_t ipr_timer_freq);
 extern int ExternalHashReasslyTableExists(uint32_t type);
+extern void ipr_update_timestamp(void);
+extern void cdx_ehash_update_timestamp(uint32_t id, uint32_t value);
+extern uint32_t cdx_ehash_get_timestamp_addr(uint32_t id);
 
 #endif /* FM_EHASH_H */

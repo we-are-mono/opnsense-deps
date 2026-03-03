@@ -185,8 +185,10 @@ Required by opnsense-deps (fmc links against libxml2). Fetch the aarch64 package
 from the FreeBSD pkg mirror and extract its headers and libraries into the
 cross-compilation sysroot created by `make kernel`.
 
+> **Note:** `make image` does this automatically. The manual steps below are only
+> needed when building without `make image`.
+
 ```
-# Check https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/ for current version
 fetch -o /tmp/libxml2.pkg 'https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/libxml2-2.15.1_1.pkg'
 mkdir -p /tmp/libxml2-extract && cd /tmp/libxml2-extract && tar xf /tmp/libxml2.pkg
 
@@ -194,6 +196,12 @@ SYSROOT=/usr/obj/build/opnsense-src/arm64.aarch64/tmp
 sudo mkdir -p ${SYSROOT}/usr/local/include ${SYSROOT}/usr/local/lib
 sudo cp -r /tmp/libxml2-extract/usr/local/include/libxml2 ${SYSROOT}/usr/local/include/
 sudo cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* ${SYSROOT}/usr/local/lib/
+```
+
+If the package version has changed, override it in the Makefile:
+
+```
+make -C /build/opnsense-deps image LIBXML2_PKG=libxml2-2.16.0.pkg
 ```
 
 ### 7. Build custom modules and tools (everything in this repo)
