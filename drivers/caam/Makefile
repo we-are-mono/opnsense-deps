@@ -11,7 +11,6 @@
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 
-SYSDIR?=	${.CURDIR}/../../../opnsense-src/sys
 
 KMOD=	caam
 SRCS=	caam.c caam_jr.c caam_crypto.c caam_alg.c caam_hash.c caam_rng.c

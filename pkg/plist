@@ -9,6 +9,8 @@
 /boot/modules/pcf2131.ko
 /boot/modules/caam.ko
 /boot/modules/tmp431.ko
+/boot/modules/mwifiex.ko
+/boot/modules/dpaa_wifi.ko
 /usr/local/sbin/cmm
 /usr/local/sbin/cmmctl
 /usr/local/sbin/dpa_app

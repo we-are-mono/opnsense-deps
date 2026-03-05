@@ -10,6 +10,7 @@
 #include <contrib/ncsw/inc/ncsw_ext.h>
 
 struct dtsec_softc;
+struct ifnet;
 
 int	cdx_dpa_bridge_init(void);
 void	cdx_dpa_bridge_destroy(void);
@@ -18,10 +19,15 @@ void	cdx_dpa_bridge_print_dtsec(void);
 
 /* dtsec lookup helpers for devman */
 struct dtsec_softc *cdx_dpa_bridge_find_dtsec(const char *ifname);
+struct ifnet *cdx_dpa_bridge_find_ifnet(const char *ifname);
 struct dtsec_softc *cdx_dpa_bridge_find_dtsec_by_ethid(uint8_t eth_id);
 const char	*cdx_dpa_bridge_find_ifname_by_fman_params(uint32_t fm_index,
 		    uint32_t port_idx, uint32_t type);
 t_Handle	cdx_dpa_bridge_get_rx_pool(void);
+void		*cdx_dpa_bridge_get_rx_sc(void);
+void		cdx_dpa_bridge_rx_buf_free(void *sc_opaque, void *buf);
+unsigned int	cdx_dpa_bridge_rx_pool_refill(void *sc_opaque,
+		    unsigned int count);
 
 /* OH port discovery and lookup (CDX port number is 1-based) */
 void		cdx_dpa_bridge_discover_oh_ports(void);

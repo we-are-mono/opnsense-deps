@@ -8,7 +8,6 @@
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 
-SYSDIR?=	${.CURDIR}/../../../opnsense-src/sys
 
 KMOD=	pf_notify
 SRCS=	pf_notify.c

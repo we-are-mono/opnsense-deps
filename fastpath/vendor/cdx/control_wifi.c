@@ -37,6 +37,12 @@ static int wifi_vap_entry( U16 *ptr, U16 len )
 
 	memcpy( &cmd, ptr, sizeof(struct wifiCmd));
 
+	printk(KERN_INFO "cdx: wifi_vap_entry: action=%u vapid=%u "
+	    "ifname='%s' mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+	    cmd.action, cmd.VAPID, cmd.ifname,
+	    cmd.mac_addr[0], cmd.mac_addr[1], cmd.mac_addr[2],
+	    cmd.mac_addr[3], cmd.mac_addr[4], cmd.mac_addr[5]);
+
 	if( cmd.VAPID >= MAX_WIFI_VAPS )
 		return ERR_UNKNOWN_ACTION;
 
@@ -72,10 +78,14 @@ static int wifi_vap_entry( U16 *ptr, U16 len )
 
 			if(!add_onif(cmd.ifname, &port->itf, NULL, IF_TYPE_WLAN | IF_TYPE_PHYSICAL))
 			{
+				printk(KERN_ERR "cdx: wifi_vap_entry: "
+				    "add_onif('%s') FAILED\n", cmd.ifname);
 				return CMD_ERR;
 			}
 
 			if (dpa_add_wlan_if(cmd.ifname, &port->itf, cmd.VAPID, cmd.mac_addr)) {
+				printk(KERN_ERR "cdx: wifi_vap_entry: "
+				    "dpa_add_wlan_if('%s') FAILED\n", cmd.ifname);
 				remove_onif_by_index(port->itf.index);
 				wifiDesc[cmd.VAPID].VAPID = 0xFFFF;
 				return CMD_ERR;
@@ -89,6 +99,9 @@ static int wifi_vap_entry( U16 *ptr, U16 len )
 			if ( rxc->users < MAX_WIFI_VAPS )
 				rxc->users++;
 
+			printk(KERN_INFO "cdx: wifi_vap_entry: registered "
+			    "'%s' vapid=%u portid=%d users=%u\n",
+			    cmd.ifname, cmd.VAPID, portid, rxc->users);
 			break;
 			/* Removed UPDATE_VAP as it is updating bridge mac address with vap's mac address 
 				 This is handled using seperate command for all interfaces */

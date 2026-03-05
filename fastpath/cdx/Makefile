@@ -42,6 +42,7 @@ CFLAGS+=	-DENABLE_EGRESS_QOS
 CFLAGS+=	-DDPAA_FAST_PATH
 CFLAGS+=	-DENABLE_FLOW_TIME_STAMPS
 CFLAGS+=	-DDPA_IPSEC_OFFLOAD
+CFLAGS+=	-DWIFI_ENABLE
 
 # NCSW build environment defines (replicate dflags_arm64.h without its
 # Linux-specific includes like <asm/byteorder.h> and <linux/delay.h>)

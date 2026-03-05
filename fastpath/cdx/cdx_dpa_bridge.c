@@ -18,6 +18,8 @@
 #include <sys/bus.h>
 #include <sys/malloc.h>
 #include <sys/socket.h>
+#include <vm/uma.h>
+#include <machine/atomic.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
@@ -32,6 +34,7 @@
 #include <contrib/ncsw/inc/Peripherals/fm_port_ext.h>
 #include <contrib/ncsw/inc/Peripherals/qm_ext.h>
 #include <dev/dpaa/fman.h>
+#include <dev/dpaa/bman.h>
 #include <dev/dpaa/if_dtsec.h>
 #include <dev/dpaa/dpaa_oh.h>
 
@@ -218,6 +221,7 @@ cdx_dpa_bridge_init(void)
 
 /* SDK external hash table API (fm_ehash_freebsd.c) */
 extern void ExternalHashTableDelete(t_Handle h_HashTbl);
+extern void cdx_destroy_port_fqs(void);
 
 void
 cdx_dpa_bridge_destroy(void)
@@ -225,10 +229,59 @@ cdx_dpa_bridge_destroy(void)
 	struct cdx_fman_info *fi = &cdx_fman_info_data;
 	uint32_t i;
 
-	/* Clear globals first to prevent concurrent access */
+	/*
+	 * Step 1: Delete PCD on all ports FIRST.
+	 * This stops FMan from classifying frames through CDX hash
+	 * tables and KG schemes.  Without this, FMan continues to
+	 * reference MURAM objects we're about to free → exceptions.
+	 */
+	{
+		devclass_t dc;
+		device_t dev;
+		struct dtsec_softc *sc;
+		int unit;
+
+		dc = devclass_find("dtsec");
+		if (dc != NULL) {
+			for (unit = 0; unit < devclass_get_maxunit(dc);
+			    unit++) {
+				dev = devclass_get_device(dc, unit);
+				if (dev == NULL)
+					continue;
+				sc = device_get_softc(dev);
+				if (sc == NULL || sc->sc_rxph == NULL)
+					continue;
+				FM_PORT_DeletePCD(sc->sc_rxph);
+				device_printf(dev, "PCD deleted for CDX "
+				    "unload\n");
+			}
+		}
+
+		/* OH ports */
+		for (i = 0; i < CDX_MAX_OH_PORTS; i++) {
+			t_Handle ohp;
+			if (cdx_oh_devs[i] == NULL)
+				continue;
+			ohp = dpaa_oh_get_fm_port(cdx_oh_devs[i]);
+			if (ohp != NULL) {
+				FM_PORT_DeletePCD(ohp);
+				printf("cdx: OH port %u PCD deleted\n",
+				    i + 1);
+			}
+		}
+	}
+
+	/* Clear globals to prevent concurrent access */
 	fman_info = NULL;
 	cdx_num_fmans = 0;
 	cdx_fman_dev = NULL;
+
+	/*
+	 * Step 2: Free distribution FQRs.
+	 * PCD is already deleted, so no new frames will be enqueued.
+	 * Retire existing FQs and quiesce portal poll tasks.
+	 */
+	cdx_destroy_port_fqs();
 
 	/*
 	 * Delete all hash tables tracked in tbl_info.
@@ -419,6 +472,25 @@ cdx_dpa_bridge_find_dtsec(const char *ifname)
 }
 
 /*
+ * cdx_dpa_bridge_find_ifnet — Find the ifnet for a dtsec by name.
+ *
+ * Thin wrapper around cdx_dpa_bridge_find_dtsec that returns just
+ * the ifnet pointer.  Used by cdx_dpa_takeover.c to avoid including
+ * if_dtsec.h in the CDX module.
+ */
+if_t
+cdx_dpa_bridge_find_ifnet(const char *ifname)
+{
+	struct dtsec_softc *sc;
+
+	sc = cdx_dpa_bridge_find_dtsec(ifname);
+	if (sc == NULL)
+		return (NULL);
+
+	return (sc->sc_ifnet);
+}
+
+/*
  * Find a dtsec device by FMan port index (eth_id).  Used by devman
  * to look up dtsec devices by port number rather than name.
  *
@@ -525,6 +597,76 @@ cdx_dpa_bridge_get_rx_pool(void)
 	if (sc != NULL)
 		return (sc->sc_rx_pool);
 	return (NULL);
+}
+
+/*
+ * cdx_dpa_bridge_get_rx_sc — Return an opaque dtsec_softc pointer.
+ *
+ * Used by cdx_dpa_takeover.c to cache the softc pointer for passing
+ * as ext_arg2 in m_extadd.  The CDX module doesn't include if_dtsec.h
+ * directly, so the pointer is opaque (void *) from its perspective.
+ */
+void *
+cdx_dpa_bridge_get_rx_sc(void)
+{
+
+	return (cdx_dpa_bridge_find_dtsec_by_ethid(0));
+}
+
+/*
+ * cdx_dpa_bridge_rx_buf_free — Consumption model buffer free.
+ *
+ * Recovers the original KVA pointer stashed at offset 0 of the buffer
+ * by the dtsec driver's BMan refill code, frees to UMA, and decrements
+ * sc_rx_buf_total.  The dtsec refill mechanism will notice the BMan
+ * pool count is low and replenish it with fresh allocations.
+ *
+ * This matches dtsec_rm_fqr_mext_free() in if_dtsec_rm.c.
+ */
+void
+cdx_dpa_bridge_rx_buf_free(void *sc_opaque, void *buf)
+{
+	struct dtsec_softc *sc = sc_opaque;
+
+	uma_zfree(sc->sc_rx_zone, (void *)(*(uintptr_t *)buf));
+	atomic_subtract_32(&sc->sc_rx_buf_total, 1);
+}
+
+/*
+ * cdx_dpa_bridge_rx_pool_refill — Refill BMan pool from UMA.
+ *
+ * Allocates buffers from the dtsec UMA zone, stashes the KVA pointer
+ * at offset 0 (matching dtsec_rm_buf_stash_ptr), and puts them into
+ * BMan.  Increments sc_rx_buf_total for each buffer added.
+ *
+ * Must be called when BMan pool count is low.  This is the CDX
+ * equivalent of the refill at the top of dtsec_rm_fqr_rx_callback().
+ * When CDX replaces the dtsec PCD, dtsec RX callbacks no longer fire,
+ * so CDX must handle refill itself.
+ *
+ * Returns the number of buffers actually added to BMan.
+ */
+unsigned int
+cdx_dpa_bridge_rx_pool_refill(void *sc_opaque, unsigned int count)
+{
+	struct dtsec_softc *sc = sc_opaque;
+	unsigned int i;
+	uint8_t *buf;
+
+	for (i = 0; i < count; i++) {
+		buf = uma_zalloc(sc->sc_rx_zone, M_NOWAIT);
+		if (buf == NULL)
+			break;
+		/* Stash KVA pointer at offset 0 for recovery after
+		 * BMan/FMan round-trip (matches dtsec_rm_buf_stash_ptr) */
+		*(uintptr_t *)buf = (uintptr_t)buf;
+		if (bman_put_buffer(sc->sc_rx_pool, buf) != 0) {
+			uma_zfree(sc->sc_rx_zone, buf);
+			break;
+		}
+		atomic_add_32(&sc->sc_rx_buf_total, 1);
+	}
+	return (i);
 }
 
 /* ----------------------------------------------------------------

@@ -37,6 +37,7 @@
 #include "cmm_deny.h"
 #include "cmm_socket.h"
 #include "cmm_bridge.h"
+#include "cmm_wifi.h"
 #include "cmm_ctrl.h"
 #include "pf_notify.h"
 #include "libfci.h"
@@ -258,6 +259,7 @@ main(int argc, char *argv[])
 	cmm_l2tp_init(g);
 	cmm_socket_init();
 	cmm_bridge_init(g);
+	cmm_wifi_init(g);
 
 	if (cmm_ipsec_init() < 0)
 		goto out;
@@ -433,6 +435,7 @@ out:
 	cmm_ctrl_fini(g);
 	cmm_sa_flush_all(g);
 	cmm_conn_deregister_all(g);
+	cmm_wifi_fini(g);
 	cmm_bridge_fini(g);
 	cmm_socket_fini(g);
 	cmm_l2tp_fini(g);

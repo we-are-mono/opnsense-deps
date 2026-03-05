@@ -22,6 +22,7 @@
 OPSDIR=		${.CURDIR}
 FASTPATH=	${OPSDIR}/fastpath
 DRIVERS=	${OPSDIR}/drivers
+VENDORDIR?=	${OPSDIR}/_vendor
 
 # Cross-compilation settings (all ?= for easy override)
 SRCTOP?=	/build
@@ -38,7 +39,8 @@ SETSDIR=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/sets
 
 # Common args for all kernel module builds
 # Host clang cross-compiles with explicit --target (bsd.kmod.mk does NOT add it)
-KMOD_ARGS=	KERNBUILDDIR=${KERNBUILDDIR} \
+KMOD_ARGS=	SYSDIR=${SRCDIR}/sys \
+		KERNBUILDDIR=${KERNBUILDDIR} \
 		MACHINE=arm64 MACHINE_ARCH=aarch64 \
 		CC="cc --target=aarch64-unknown-freebsd14.3" LD=ld.lld
 
@@ -85,6 +87,14 @@ KMOD_SFP=	${DRIVERS}/sfp-led
 KMOD_PCF=	${DRIVERS}/pcf2131
 KMOD_CAAM=	${DRIVERS}/caam
 KMOD_TMP=	${DRIVERS}/tmp431
+KMOD_MWIFI=	${DRIVERS}/mwifiex
+KMOD_DW=	${DRIVERS}/dpaa_wifi
+
+# NXP vendor repositories (pinned commits for reproducible builds)
+MWIFIEX_REPO=	https://github.com/nxp-imx/mwifiex.git
+MWIFIEX_COMMIT=	84ca65c9ff935d7f2999af100a82531c22c65234
+IMX_FW_REPO=	https://github.com/nxp-imx/imx-firmware.git
+IMX_FW_COMMIT=	8c9b278016c97527b285f2fcbe53c2d428eb171d
 
 build-cdx:
 	${MAKE} -C ${KMOD_CDX} ${KMOD_ARGS}
@@ -119,9 +129,42 @@ build-caam:
 build-tmp431:
 	${MAKE} -C ${KMOD_TMP} ${KMOD_ARGS}
 
+fetch-vendor:
+	@mkdir -p ${VENDORDIR}
+	@if [ ! -d ${VENDORDIR}/mwifiex/.git ]; then \
+		echo "==> Cloning nxp-imx/mwifiex"; \
+		git clone --depth 1 ${MWIFIEX_REPO} ${VENDORDIR}/mwifiex; \
+		cd ${VENDORDIR}/mwifiex && git fetch --depth 1 origin ${MWIFIEX_COMMIT} && git checkout ${MWIFIEX_COMMIT}; \
+	fi
+	@if [ ! -d ${VENDORDIR}/imx-firmware/.git ]; then \
+		echo "==> Cloning nxp-imx/imx-firmware"; \
+		git clone --depth 1 ${IMX_FW_REPO} ${VENDORDIR}/imx-firmware; \
+		cd ${VENDORDIR}/imx-firmware && git fetch --depth 1 origin ${IMX_FW_COMMIT} && git checkout ${IMX_FW_COMMIT}; \
+	fi
+
+build-mwifiex: fetch-vendor
+	${MAKE} -C ${KMOD_MWIFI} ${KMOD_ARGS} VENDORDIR=${VENDORDIR}
+
+build-dpaa_wifi: fetch-vendor
+	${MAKE} -C ${KMOD_DW} ${KMOD_ARGS} VENDORDIR=${VENDORDIR}
+
 modules: build-cdx build-fci build-auto_bridge build-pf_notify \
 	 build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
-	 build-caam build-tmp431
+	 build-caam build-tmp431 build-mwifiex build-dpaa_wifi
+	@mkdir -p ${DISTDIR}
+	cp ${KMOD_CDX}/cdx.ko ${DISTDIR}/
+	cp ${KMOD_FCI}/fci.ko ${DISTDIR}/
+	cp ${KMOD_AB}/auto_bridge.ko ${DISTDIR}/
+	cp ${KMOD_PN}/pf_notify.ko ${DISTDIR}/
+	cp ${KMOD_EMC}/emc2302.ko ${DISTDIR}/
+	cp ${KMOD_INA}/ina2xx.ko ${DISTDIR}/
+	cp ${KMOD_LP}/lp5812.ko ${DISTDIR}/
+	cp ${KMOD_SFP}/sfpled.ko ${DISTDIR}/
+	cp ${KMOD_PCF}/pcf2131.ko ${DISTDIR}/
+	cp ${KMOD_CAAM}/caam.ko ${DISTDIR}/
+	cp ${KMOD_TMP}/tmp431.ko ${DISTDIR}/
+	cp ${KMOD_MWIFI}/mwifiex.ko ${DISTDIR}/
+	cp ${KMOD_DW}/dpaa_wifi.ko ${DISTDIR}/
 
 # ============================================================
 # Userspace components (dependency order: fmlib -> fmc -> dpa_app)
@@ -154,6 +197,12 @@ fand:
 	cd ${BUILDDIR}/fand && ${MAKE} -f ${DRIVERS}/fand/Makefile all
 
 userspace: fmlib fmc dpa_app cmm cmmctl fand
+	@mkdir -p ${DISTDIR}
+	cp ${BUILDDIR}/fmc/fmc ${DISTDIR}/
+	cp ${BUILDDIR}/dpa_app/dpa_app ${DISTDIR}/
+	cp ${BUILDDIR}/cmm/cmm ${DISTDIR}/
+	cp ${BUILDDIR}/cmmctl/cmmctl ${DISTDIR}/
+	cp ${BUILDDIR}/fand/fand ${DISTDIR}/
 
 # ============================================================
 # Collect outputs into dist/
@@ -172,6 +221,8 @@ dist: modules userspace
 	cp ${KMOD_PCF}/pcf2131.ko ${DISTDIR}/
 	cp ${KMOD_CAAM}/caam.ko ${DISTDIR}/
 	cp ${KMOD_TMP}/tmp431.ko ${DISTDIR}/
+	cp ${KMOD_MWIFI}/mwifiex.ko ${DISTDIR}/
+	cp ${KMOD_DW}/dpaa_wifi.ko ${DISTDIR}/
 	cp ${BUILDDIR}/fmc/fmc ${DISTDIR}/
 	cp ${BUILDDIR}/dpa_app/dpa_app ${DISTDIR}/
 	cp ${BUILDDIR}/cmm/cmm ${DISTDIR}/
@@ -202,6 +253,8 @@ package: clean dist
 	install -m 644 ${DISTDIR}/pcf2131.ko ${PKG_STAGEDIR}/boot/modules/
 	install -m 644 ${DISTDIR}/caam.ko ${PKG_STAGEDIR}/boot/modules/
 	install -m 644 ${DISTDIR}/tmp431.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/mwifiex.ko ${PKG_STAGEDIR}/boot/modules/
+	install -m 644 ${DISTDIR}/dpaa_wifi.ko ${PKG_STAGEDIR}/boot/modules/
 	# Userspace binaries
 	install -m 755 ${DISTDIR}/cmm ${PKG_STAGEDIR}/usr/local/sbin/
 	install -m 755 ${DISTDIR}/cmmctl ${PKG_STAGEDIR}/usr/local/sbin/
@@ -240,31 +293,19 @@ _NCPU!=		sysctl -n hw.ncpu 2>/dev/null || echo 4
 image:
 	@rm -rf ${DISTDIR}/*
 	@touch ${DISTDIR}/.keep
-	@# --- Early check: bail if opnsense-src has uncommitted changes ---
-	@if [ -d "${SRCDIR}/.git" ]; then \
-		if ! git -C ${SRCDIR} diff --quiet HEAD 2>/dev/null || \
-		   ! git -C ${SRCDIR} diff --cached --quiet HEAD 2>/dev/null; then \
-			echo "ERROR: ${SRCDIR} has uncommitted changes."; \
-			echo "Commit or stash before running 'make image'."; \
-			exit 1; \
-		fi; \
-	fi
 	@echo "==> Step 1: Checking repositories"
-	@test -d ${SRCDIR}/.git || git clone https://github.com/opnsense/src.git ${SRCDIR}
+	@test -d ${SRCDIR}/.git || git clone https://github.com/we-are-mono/opnsense-src.git ${SRCDIR}
 	@test -d ${BUILDTOOL}/.git || git clone https://github.com/maurice-w/opnsense-vm-images.git ${BUILDTOOL}
 	@cp -n ${OPSDIR}/config/GATEWAY.conf ${BUILDTOOL}/device/ 2>/dev/null || true
-	@echo "==> Step 2: Applying kernel patches"
-	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && \
-		git reset --hard origin/${OPS_BRANCH} && \
-		git am ${OPSDIR}/patches/*.patch
-	@echo "==> Step 3: Building kernel (clean)"
+	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && git pull
+	@echo "==> Step 2: Building kernel (clean)"
 	sudo rm -f ${SETSDIR}/kernel-*-GATEWAY.txz
 	sudo chflags -R noschg /usr/obj${SRCDIR}/arm64.aarch64 2>/dev/null || true
 	sudo rm -rf /usr/obj${SRCDIR}/arm64.aarch64
 	sudo ${MAKE} -C ${BUILDTOOL} kernel \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
 		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
-	@echo "==> Step 3a: Populating sysroot from base set"
+	@echo "==> Step 2a: Populating sysroot from base set"
 	@_base=$$(ls ${SETSDIR}/base-*-aarch64-GATEWAY.txz 2>/dev/null | head -1); \
 	if [ -z "$$_base" ]; then \
 		echo "ERROR: no base set found in ${SETSDIR}"; exit 1; \
@@ -276,7 +317,7 @@ image:
 		--include='./usr/lib/*.so' \
 		--include='./usr/lib/*.o' \
 		--include='./lib/*.so*'
-	@echo "==> Step 3b: Installing libxml2 into sysroot"
+	@echo "==> Step 2b: Installing libxml2 into sysroot"
 	@if [ ! -f ${SYSROOT}/usr/local/lib/libxml2.so ]; then \
 		sudo rm -f /tmp/libxml2.pkg; \
 		fetch -qo /tmp/libxml2.pkg '${LIBXML2_URL}'; \
@@ -293,17 +334,17 @@ image:
 	else \
 		echo "    libxml2 already in sysroot"; \
 	fi
-	@echo "==> Step 4: Building modules and userspace"
+	@echo "==> Step 3: Building modules and userspace"
 	${MAKE} -C ${OPSDIR} -j${_NCPU} all
-	@echo "==> Step 5: Building package"
+	@echo "==> Step 4: Building package"
 	${MAKE} -C ${OPSDIR} package
-	@echo "==> Step 6: Assembling image"
+	@echo "==> Step 5: Assembling image"
 	sudo rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
 		${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz
 	sudo ${MAKE} -C ${BUILDTOOL} arm-5G \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
 		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
-	@echo "==> Step 7: Compressing and copying to dist/"
+	@echo "==> Step 6: Compressing and copying to dist/"
 	@mkdir -p ${DISTDIR}
 	sudo gzip -k ${IMAGESDIR}/OPNsense-*-GATEWAY.img
 	cp ${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz ${DISTDIR}/
@@ -326,10 +367,12 @@ clean:
 	${MAKE} -C ${KMOD_PCF} ${KMOD_ARGS} clean
 	${MAKE} -C ${KMOD_CAAM} ${KMOD_ARGS} clean
 	${MAKE} -C ${KMOD_TMP} ${KMOD_ARGS} clean
+	${MAKE} -C ${KMOD_MWIFI} ${KMOD_ARGS} clean
+	${MAKE} -C ${KMOD_DW} ${KMOD_ARGS} clean
 	rm -rf ${BUILDDIR}
 
-.PHONY: all modules userspace dist package image clean \
+.PHONY: all modules userspace dist package image clean fetch-vendor \
 	build-cdx build-fci build-auto_bridge build-pf_notify \
 	build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
-	build-caam build-tmp431 \
+	build-caam build-tmp431 build-mwifiex build-dpaa_wifi \
 	fmlib fmc dpa_app cmm cmmctl fand

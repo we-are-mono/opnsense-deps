@@ -2,6 +2,7 @@
 dist/*
 !dist/.keep
 _build/
+_vendor/
 
 # Object files and libraries
 *.o

@@ -30,6 +30,8 @@ struct cmm_ifaddr {
 #define ITF_F_BRIDGE		(1 << 4)	/* Bridge interface */
 #define ITF_F_L2TP		(1 << 5)	/* L2TP tunnel interface */
 #define ITF_F_FPP_L2TP		(1 << 6)	/* L2TP registered in CDX */
+#define ITF_F_WIFI		(1 << 7)	/* WiFi VAP interface */
+#define ITF_F_FPP_WIFI		(1 << 8)	/* WiFi VAP registered in CDX */
 
 struct cmm_route;
 
@@ -88,6 +90,10 @@ void cmm_itf_foreach_tunnel(struct cmm_global *g, cmm_itf_tunnel_fn fn);
 /* Iterate all L2TP interfaces, calling fn for each with ITF_F_L2TP set */
 typedef int (*cmm_itf_l2tp_fn)(struct cmm_global *, struct cmm_interface *);
 void cmm_itf_foreach_l2tp(struct cmm_global *g, cmm_itf_l2tp_fn fn);
+
+/* Iterate all WiFi interfaces, calling fn for each with ITF_F_WIFI set */
+typedef int (*cmm_itf_wifi_fn)(struct cmm_global *, struct cmm_interface *);
+void cmm_itf_foreach_wifi(struct cmm_global *g, cmm_itf_wifi_fn fn);
 
 /* Probe interface for tunnel endpoints (gif/gre) */
 void itf_detect_tunnel(struct cmm_interface *itf, int sd);

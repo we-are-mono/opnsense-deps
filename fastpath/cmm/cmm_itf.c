@@ -28,6 +28,7 @@
 #include "cmm_vlan.h"
 #include "cmm_tunnel.h"
 #include "cmm_bridge.h"
+#include "cmm_wifi.h"
 
 static struct list_head itf_hash[ITF_HASH_SIZE];
 
@@ -146,6 +147,21 @@ mask_to_prefixlen(sa_family_t af, const void *mask)
  * Probe an interface for 802.1Q VLAN membership using SIOCGETVLAN.
  * If successful, populates vlan_id, parent_ifindex, and sets ITF_F_VLAN.
  */
+/*
+ * Detect WiFi VAP interfaces by name prefix.
+ * mwifiex creates "uap0", "uap1", etc.
+ */
+static void
+itf_detect_wifi(struct cmm_interface *itf)
+{
+	if (strncmp(itf->ifname, "uap", 3) == 0 ||
+	    strncmp(itf->ifname, "wlan", 4) == 0) {
+		itf->itf_flags |= ITF_F_WIFI;
+		cmm_print(CMM_LOG_INFO,
+		    "itf: %s is WiFi VAP", itf->ifname);
+	}
+}
+
 static void
 itf_detect_vlan(struct cmm_interface *itf, int sd)
 {
@@ -235,16 +251,18 @@ cmm_itf_init(void)
 					itf_detect_tunnel(itf, sd);
 					close(sd);
 				}
+				itf_detect_wifi(itf);
 			}
 
 			cmm_print(CMM_LOG_INFO,
 			    "itf: %s idx=%d mac=%02x:%02x:%02x:%02x:%02x:%02x "
-			    "mtu=%u flags=0x%x",
+			    "mtu=%u flags=0x%x%s",
 			    itf->ifname, itf->ifindex,
 			    itf->macaddr[0], itf->macaddr[1],
 			    itf->macaddr[2], itf->macaddr[3],
 			    itf->macaddr[4], itf->macaddr[5],
-			    itf->mtu, itf->flags);
+			    itf->mtu, itf->flags,
+			    (itf->itf_flags & ITF_F_WIFI) ? " WIFI" : "");
 			continue;
 		}
 
@@ -346,7 +364,18 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 		if (ifm->ifm_data.ifi_type == IFT_BRIDGE)
 			itf->itf_flags |= ITF_F_BRIDGE;
 
-		/* Populate MTU, MAC, and detect VLAN via ioctl */
+		/* Extract MAC from RTM_IFINFO sockaddr_dl */
+		if (ifm->ifm_addrs & RTA_IFP) {
+			struct sockaddr_dl *sdl;
+
+			sdl = (struct sockaddr_dl *)(ifm + 1);
+			if (sdl->sdl_family == AF_LINK &&
+			    sdl->sdl_alen == ETHER_ADDR_LEN)
+				memcpy(itf->macaddr, LLADDR(sdl),
+				    ETHER_ADDR_LEN);
+		}
+
+		/* Populate MTU and detect VLAN/tunnel/WiFi */
 		{
 			struct ifreq ifr;
 			int sd;
@@ -362,11 +391,18 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 				itf_detect_tunnel(itf, sd);
 				close(sd);
 			}
+			itf_detect_wifi(itf);
 		}
 
 		cmm_print(CMM_LOG_INFO,
-		    "itf: new %s idx=%d mtu=%u",
-		    itf->ifname, itf->ifindex, itf->mtu);
+		    "itf: new %s idx=%d mac=%02x:%02x:%02x:%02x:%02x:%02x "
+		    "mtu=%u flags=0x%x%s",
+		    itf->ifname, itf->ifindex,
+		    itf->macaddr[0], itf->macaddr[1],
+		    itf->macaddr[2], itf->macaddr[3],
+		    itf->macaddr[4], itf->macaddr[5],
+		    itf->mtu, ifm->ifm_flags,
+		    (itf->itf_flags & ITF_F_WIFI) ? " WIFI" : "");
 	}
 
 	if (itf->flags != (uint32_t)ifm->ifm_flags) {
@@ -385,9 +421,10 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 		itf->mtu = ifm->ifm_data.ifi_mtu;
 	}
 
-	/* Notify VLAN, tunnel, and bridge modules of flag changes */
+	/* Notify VLAN, tunnel, WiFi, and bridge modules of flag changes */
 	cmm_vlan_notify(g, itf);
 	cmm_tunnel_notify(g, itf);
+	cmm_wifi_notify(g, itf);
 
 	/* If this is a bridge or a potential bridge member, rescan */
 	if ((itf->itf_flags & ITF_F_BRIDGE) ||
@@ -589,6 +626,24 @@ cmm_itf_foreach_l2tp(struct cmm_global *g, cmm_itf_l2tp_fn fn)
 		    pos = list_next(pos)) {
 			itf = container_of(pos, struct cmm_interface, entry);
 			if (itf->itf_flags & ITF_F_L2TP)
+				fn(g, itf);
+		}
+	}
+}
+
+void
+cmm_itf_foreach_wifi(struct cmm_global *g, cmm_itf_wifi_fn fn)
+{
+	struct list_head *bucket, *pos;
+	struct cmm_interface *itf;
+	int i;
+
+	for (i = 0; i < ITF_HASH_SIZE; i++) {
+		bucket = &itf_hash[i];
+		for (pos = list_first(bucket); pos != bucket;
+		    pos = list_next(pos)) {
+			itf = container_of(pos, struct cmm_interface, entry);
+			if (itf->itf_flags & ITF_F_WIFI)
 				fn(g, itf);
 		}
 	}

@@ -155,6 +155,9 @@ CMD_DECLARE(statistics)
 #ifdef DPA_IPSEC_OFFLOAD
 CMD_DECLARE(ipsec)
 #endif
+#ifdef WIFI_ENABLE
+CMD_DECLARE(wifi)
+#endif
 CMD_DECLARE(mc4)
 CMD_DECLARE(mc6)
 CMD_DECLARE(rtp_relay)
@@ -180,6 +183,9 @@ cdx_cmdhandler_init(void)
 #ifdef DPA_IPSEC_OFFLOAD
 	CMD_INIT(ipsec);
 #endif
+#ifdef WIFI_ENABLE
+	CMD_INIT(wifi);
+#endif
 	CMD_INIT(mc4);
 	CMD_INIT(mc6);
 	CMD_INIT(rtp_relay);
@@ -201,6 +207,9 @@ cdx_cmdhandler_exit(void)
 	CMD_EXIT(mc4);
 #ifdef DPA_IPSEC_OFFLOAD
 	CMD_EXIT(ipsec);
+#endif
+#ifdef WIFI_ENABLE
+	CMD_EXIT(wifi);
 #endif
 	CMD_EXIT(statistics);
 	CMD_EXIT(qm);

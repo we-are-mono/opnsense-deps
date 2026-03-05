@@ -60,6 +60,10 @@ cmm_fe_route_register(struct cmm_global *g, struct cmm_route *rt)
 	if (itf == NULL)
 		return (-1);
 
+	/* Skip loopback — CDX can't offload local delivery routes */
+	if (strncmp(itf->ifname, "lo", 2) == 0)
+		return (-1);
+
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.action = FPP_ACTION_REGISTER;
 	cmd.mtu = rt->mtu;

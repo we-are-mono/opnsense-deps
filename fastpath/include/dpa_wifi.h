@@ -3,7 +3,7 @@
  *
  * The original is deeply Linux-coupled (linux/cdev.h, struct net_device,
  * struct qman_fq, etc.).  CDX uses it only for the is_wlan_iface check
- * in cdx_ehash.c.  Provide minimal stubs.
+ * in cdx_ehash.c and for dpaa_get_vap_fwd_fq() in the TX path.
  *
  * Copyright 2026 Mono Technologies Inc.
  * SPDX-License-Identifier: BSD-2-Clause
@@ -11,12 +11,14 @@
 #ifndef _DPAA_HOST_GENERIC_H_
 #define _DPAA_HOST_GENERIC_H_
 
-/* Stub: WiFi VAP forwarding — always fails (no WiFi offload on FreeBSD) */
-static inline int
-dpaa_get_vap_fwd_fq(uint16_t vap_id, uint32_t *fqid, uint32_t hash)
-{
-
-	return (-1);
-}
+/*
+ * dpaa_get_vap_fwd_fq — Get the TX FQID for a WiFi VAP.
+ *
+ * On the Linux ASK platform, this returns VWD's wlan_fq_to_fman FQID.
+ * On FreeBSD, we return the WiFi OH port's default RX FQID.
+ *
+ * Returns 0 on success, -1 if the WiFi OH port is not configured.
+ */
+int dpaa_get_vap_fwd_fq(uint16_t vap_id, uint32_t *fqid, uint32_t hash);
 
 #endif /* _DPAA_HOST_GENERIC_H_ */

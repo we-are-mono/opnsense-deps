@@ -3,7 +3,8 @@
 Out-of-tree kernel modules, userspace daemons, and build tooling for the Mono
 Gateway OPNsense image. Contains the DPAA1 fast-path stack (CDX flow offload,
 FCI, CMM connection manager, PF notifier, auto-bridge), board-support drivers
-(LP5812 LED, EMC2302 fan, INA2xx power, SFP LED, PCF2131 RTC, CAAM crypto),
+(LP5812 LED, EMC2302 fan, INA2xx power, SFP LED, PCF2131 RTC, TMP431 thermal,
+CAAM crypto), WiFi support (NXP 88W9098 PCIe driver + DPAA OH port bridge),
 FMan toolchain (fmlib, fmc, dpa_app), and helper scripts for kernel image
 creation and deployment.
 
@@ -11,20 +12,17 @@ creation and deployment.
 
 ```
 opnsense-deps/
-├── patches/              # kernel source patches (git format-patch)
-│   ├── 0001-arm64-platform-support-for-NXP-LS1046A.patch
-│   ├── 0002-ncsw-port-DPAA1-NCSW-layer-to-ARM64.patch
-│   ├── 0003-dpaa-drivers-and-board-peripherals-for-LS1046A.patch
-│   ├── 0004-net-bridge-and-pf-hooks-for-hardware-flow-offload.patch
-│   ├── 0005-dts-add-Mono-Gateway-Development-Kit-device-tree.patch
-│   └── 0006-build-GATEWAY-kernel-config-and-DPAA-build-rules.patch
 ├── drivers/              # out-of-tree kernel modules
 │   ├── caam/             # NXP CAAM crypto accelerator (JR + QI)
-│   ├── pcf2131/          # NXP PCF2131 RTC
+│   ├── dpaa_wifi/        # WiFi ↔ FMan OH port data plane bridge
 │   ├── emc2302/          # SMSC EMC2302 fan controller
+│   ├── fand/             # Fan control daemon (userspace)
 │   ├── ina2xx/           # TI INA2xx power monitor
 │   ├── lp5812/           # TI LP5812 LED controller
-│   └── sfp-led/          # SFP+ link status LED
+│   ├── mwifiex/          # NXP 88W9098 PCIe WiFi driver + firmware
+│   ├── pcf2131/          # NXP PCF2131 RTC
+│   ├── sfp-led/          # SFP+ link status LED
+│   └── tmp431/           # TI TMP431 thermal sensor
 ├── fastpath/             # DPAA1 fast-path modules + userspace
 │   ├── cdx/              # CDX flow offload kernel module
 │   ├── fci/              # Fast-path Control Interface module
@@ -36,8 +34,10 @@ opnsense-deps/
 │   ├── cmm/              # Connection Manager daemon
 │   └── cmmctl/           # CMM control utility
 ├── config/               # FMC/CDX XML configuration files
+├── patches/              # historical kernel patches (reference only)
 ├── rc.d/                 # rc.d service scripts and syshook scripts
 ├── pkg/                  # FreeBSD package metadata
+├── _vendor/              # NXP vendor repos (cloned at build time, gitignored)
 └── Makefile              # top-level build (modules + userspace + package)
 ```
 
@@ -107,7 +107,7 @@ Both the local and NFS paths need the following repositories in `/build`:
 ```
 cd /build
 git clone https://github.com/maurice-w/opnsense-vm-images.git opnsense-build
-git clone https://github.com/opnsense/src.git opnsense-src
+git clone https://github.com/we-are-mono/opnsense-src.git opnsense-src
 git clone https://github.com/we-are-mono/opnsense-deps
 
 # Copy the GATEWAY device config into the build system
@@ -147,18 +147,7 @@ set exists in the sets directory, remove it before building the image. The xtool
 mechanism (`setup_xtools`/`setup_xbase`) is broken for cross-builds and will leave amd64 binaries
 in the image.
 
-### 4. Apply kernel patches
-
-The kernel source is patched from upstream OPNsense (`stable/26.1`) via a series
-of format-patch files in `patches/`. Apply them before building:
-
-```
-cd /build/opnsense-src
-git checkout stable/26.1
-git am /build/opnsense-deps/patches/*.patch
-```
-
-### 5. Build kernel
+### 4. Build kernel
 
 ```
 sudo make -C /build/opnsense-build kernel DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src
@@ -179,7 +168,7 @@ sudo rm -f /usr/local/opnsense/build/26.1/aarch64/sets/kernel-*-GATEWAY.txz
 sudo rm -rf /usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY
 ```
 
-### 6. Install libxml2 into cross-compilation sysroot
+### 5. Install libxml2 into cross-compilation sysroot
 
 Required by opnsense-deps (fmc links against libxml2). Fetch the aarch64 package
 from the FreeBSD pkg mirror and extract its headers and libraries into the
@@ -204,13 +193,17 @@ If the package version has changed, override it in the Makefile:
 make -C /build/opnsense-deps image LIBXML2_PKG=libxml2-2.16.0.pkg
 ```
 
-### 7. Build custom modules and tools (everything in this repo)
+### 6. Build custom modules and tools (everything in this repo)
 
 ```
 make -C /build/opnsense-deps -j24 all
 ```
 
-### 8. Assemble eMMC image
+The first build automatically clones NXP vendor repositories (mwifiex driver
+source and imx-firmware) into `_vendor/` at pinned commits. Subsequent builds
+reuse the cached clones. To force a fresh clone, remove `_vendor/` and rebuild.
+
+### 7. Assemble eMMC image
 
 ```
 sudo make -C /build/opnsense-build arm-5G DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src
@@ -226,50 +219,40 @@ sudo gzip /usr/local/opnsense/build/26.1/aarch64/images/OPNsense-*-GATEWAY.img
 
 ## Development workflow
 
-### Kernel patches
+### Kernel source
 
-The kernel source (`opnsense-src`) is maintained on the `mono-gateway` branch,
-based on `stable/26.1`. Changes are organized into 6 logical patches:
-
-| # | Patch | Scope |
-|---|-------|-------|
-| 1 | arm64: platform support | pio.h, machdep.c, systm.h, random.h |
-| 2 | ncsw: DPAA1 NCSW ARM64 | NCSW vendor code ARM64 porting |
-| 3 | dpaa: drivers + peripherals | BMan/QMan/FMan, dtsec, GPY PHY, INA2xx, GPIO |
-| 4 | net: bridge + pf hooks | if_bridge.c, pf.c for hardware offload |
-| 5 | dts: board device tree | mono-gateway-dk.dts |
-| 6 | build: GATEWAY config | kernel config, DPAA build rules |
-
-Applying the patches with `git am` creates real commits with full history — the
-patches *are* the commit history. This means the `--fixup`/`--autosquash`
-workflow works identically whether you originally authored the patches or applied
-them fresh from the repository.
+The kernel source (`opnsense-src`) is a fork of OPNsense/FreeBSD at
+[we-are-mono/opnsense-src](https://github.com/we-are-mono/opnsense-src),
+branched from `stable/26.1`. All Mono Gateway changes live as commits on this
+branch.
 
 **Making a change:**
 
 ```bash
 cd /build/opnsense-src
 
-# See the 6 commits created by git am
-git log --oneline stable/26.1..mono-gateway
+# See Mono Gateway commits on top of upstream
+git log --oneline origin/stable/26.1..HEAD
 
 # 1. Edit the file
 vim sys/contrib/device-tree/src/arm64/freescale/mono-gateway-dk.dts
 
-# 2. Stage and create a fixup commit targeting the right patch
+# 2. Stage and commit
 git add sys/contrib/device-tree/src/arm64/freescale/mono-gateway-dk.dts
-git commit --fixup <hash-of-patch-5>
+git commit -m "dts: add PCIe WiFi reset GPIO"
 
-# 3. Autosquash into the correct patch
-git rebase --autosquash stable/26.1
-
-# 4. Regenerate all patches
-rm /build/opnsense-deps/patches/*.patch
-git format-patch -o /build/opnsense-deps/patches/ stable/26.1..mono-gateway
+# 3. Push
+git push
 ```
 
-For a change that doesn't fit an existing patch, just add a new commit at the
-end of `mono-gateway` — it becomes patch 7.
+To rebase on a newer upstream OPNsense release:
+
+```bash
+git remote add upstream https://github.com/opnsense/src.git
+git fetch upstream
+git rebase upstream/stable/26.7   # or whatever the new branch is
+git push --force-with-lease
+```
 
 ### Out-of-tree modules
 
@@ -365,4 +348,4 @@ After `saveenv` and `reset`, the board will automatically boot into OPNsense on
 every subsequent power-on.
 
 > ## Disclaimer
-> Many of the files in this repository, including the kernel patches, were ported from Linux sources provided by NXP (originally targeting Linux kernel 5.4). Due to the sheer scope of the porting effort, Claude Opus 4.6 was used to assist with the adaptation of this code to FreeBSD. As such, this project should be considered **highly experimental** and is **not fit for production use** until thorough reviews and testing have been performed by the wider community.
+> Many of the files in this repository, and in the [kernel fork](https://github.com/we-are-mono/opnsense-src), were ported from Linux sources provided by NXP (originally targeting Linux kernel 5.4). Due to the sheer scope of the porting effort, Claude Opus 4.6 was used to assist with the adaptation of this code to FreeBSD. As such, this project should be considered **highly experimental** and is **not fit for production use** until thorough reviews and testing have been performed by the wider community.

@@ -387,9 +387,9 @@ dpa_get_ifinfo_by_name(char *name)
 }
 
 /*
- * Walk the interface hierarchy to find the physical ethernet parent.
+ * Walk the interface hierarchy to find the physical parent.
  * Traverses VLAN → parent and PPPoE → parent until an ethernet
- * interface (IF_TYPE_ETHERNET) is found.
+ * or WiFi interface is found.
  *
  * Returns the dpa_iface_info of the physical port, or NULL.
  */
@@ -399,7 +399,7 @@ devman_find_eth_parent(struct dpa_iface_info *iface)
 	int depth = 0;
 
 	while (iface != NULL && depth < 8) {
-		if (iface->if_flags & IF_TYPE_ETHERNET)
+		if (iface->if_flags & (IF_TYPE_ETHERNET | IF_TYPE_WLAN))
 			return (iface);
 		if (iface->if_flags & IF_TYPE_VLAN)
 			iface = iface->vlan_info.parent;
@@ -562,6 +562,15 @@ dpa_get_fm_port_index(uint32_t itf_index, uint32_t underlying_iif_index,
 		return (-1);
 	}
 
+	/* WiFi interfaces store FMan info from the OH port */
+	if (iface->if_flags & IF_TYPE_WLAN) {
+		*fm_index = iface->wlan_info.fman_idx;
+		*port_index = iface->wlan_info.port_idx;
+		*portid = iface->wlan_info.portid;
+		spin_unlock(&dpa_devlist_lock);
+		return (0);
+	}
+
 	eth_iface = devman_find_eth_parent(iface);
 	if (eth_iface == NULL) {
 		spin_unlock(&dpa_devlist_lock);
@@ -629,6 +638,21 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 			l2_info->pppoe_present = 1;
 			l2_info->pppoe_sess_id = cur->pppoe_info.session_id;
 			cur = cur->pppoe_info.parent;
+		} else if (cur->if_flags & IF_TYPE_WLAN) {
+			/* WiFi VAP — TX goes to the OH port */
+			struct wlan_iface_info *wlan = &cur->wlan_info;
+			struct dpa_iface_info *oh;
+
+			memcpy(l2_info->l2hdr, rt_entry->dstmac, 6);
+			memcpy(l2_info->l2hdr + 6, wlan->mac_addr, 6);
+			l2_info->mtu = cur->mtu;
+			l2_info->is_wlan_iface = 1;
+
+			oh = dpa_get_ohifinfo_by_portid(wlan->portid);
+			if (oh != NULL)
+				l2_info->fqid =
+				    oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+			break;
 		} else if (cur->if_flags & IF_TYPE_ETHERNET) {
 			/* Reached physical port — extract TX info */
 			struct eth_iface_info *eth = &cur->eth_info;
@@ -692,16 +716,32 @@ dpa_get_tx_l2info_by_itf(struct dpa_l2hdr_info *l2_info,
 
 	eth_parent = devman_find_eth_parent(iface);
 	if (eth_parent != NULL) {
-		struct eth_iface_info *eth = &eth_parent->eth_info;
+		if (eth_parent->if_flags & IF_TYPE_WLAN) {
+			struct wlan_iface_info *wlan =
+			    &eth_parent->wlan_info;
+			struct dpa_iface_info *oh;
 
-		memcpy(l2_info->l2hdr + 6, eth->mac_addr, 6);
-		l2_info->mtu = eth_parent->mtu;
-		l2_info->fqid = eth->fwd_tx_fqinfo[
-		    hash % DPAA_FWD_TX_QUEUES].fqid;
+			memcpy(l2_info->l2hdr + 6, wlan->mac_addr, 6);
+			l2_info->mtu = eth_parent->mtu;
+			l2_info->is_wlan_iface = 1;
+
+			oh = dpa_get_ohifinfo_by_portid(wlan->portid);
+			if (oh != NULL)
+				l2_info->fqid =
+				    oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+		} else {
+			struct eth_iface_info *eth =
+			    &eth_parent->eth_info;
+
+			memcpy(l2_info->l2hdr + 6, eth->mac_addr, 6);
+			l2_info->mtu = eth_parent->mtu;
+			l2_info->fqid = eth->fwd_tx_fqinfo[
+			    hash % DPAA_FWD_TX_QUEUES].fqid;
 #ifdef INCLUDE_ETHER_IFSTATS
-		l2_info->ether_stats_offset =
-		    eth_parent->txstats_index;
+			l2_info->ether_stats_offset =
+			    eth_parent->txstats_index;
 #endif
+		}
 	}
 
 	spin_unlock(&dpa_devlist_lock);
@@ -799,8 +839,19 @@ dpa_get_tx_fqid_by_name(char *name, uint32_t *fqid,
 		return (-1);
 	}
 
-	*fqid = eth_parent->eth_info.fwd_tx_fqinfo[
-	    hash % DPAA_FWD_TX_QUEUES].fqid;
+	if (eth_parent->if_flags & IF_TYPE_WLAN) {
+		struct dpa_iface_info *oh;
+
+		oh = dpa_get_ohifinfo_by_portid(
+		    eth_parent->wlan_info.portid);
+		if (oh != NULL)
+			*fqid = oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+		else
+			*fqid = 0;
+	} else {
+		*fqid = eth_parent->eth_info.fwd_tx_fqinfo[
+		    hash % DPAA_FWD_TX_QUEUES].fqid;
+	}
 	if (is_dscp_fq_map)
 		*is_dscp_fq_map = 0;
 
@@ -1314,20 +1365,99 @@ cdx_check_rx_iface_type_vlan(struct _itf *input_itf)
 }
 
 /* ================================================================
- * Remaining stubs — WiFi/bridge not in scope for this platform
+ * WiFi VAP interface management
  * ================================================================ */
 
+/*
+ * dpa_add_wlan_if — Register a WiFi VAP interface.
+ *
+ * Called from control_wifi.c:wifi_vap_entry() on WIFI_ADD_VAP.
+ * Populates wlan_iface_info with the WiFi OH port's fman/port
+ * indices so that cdx_ehash.c can route flows to/from WiFi.
+ *
+ * Data-path delivery of CDX-offloaded WiFi frames is handled by
+ * the dpaa_wifi kernel module (dpaa_wifi.ko), which registers its
+ * own callback on the OH port's default FQ.
+ */
 int
 dpa_add_wlan_if(char *name, struct _itf *itf, uint32_t vap_id,
     unsigned char *mac)
 {
-	return (-1);
+	struct dpa_iface_info *iface, *oh;
+
+	/*
+	 * Find the WiFi OH port — portid 9 from cdx_cfg.xml
+	 * (OFFLINE port 2, "dpa-fman0-oh@3").
+	 */
+	oh = dpa_get_ohifinfo_by_portid(9);
+	if (oh == NULL) {
+		DPA_ERROR("cdx: dpa_add_wlan_if: WiFi OH port "
+		    "(portid=9) not found\n");
+		return (-1);
+	}
+
+	iface = kzalloc(sizeof(*iface), GFP_KERNEL);
+	if (iface == NULL)
+		return (-1);
+
+	strlcpy((char *)iface->name, name, IF_NAME_SIZE);
+	iface->itf_id = itf->index;
+	iface->if_flags = itf->type;
+	iface->mtu = 1500;
+
+	/* Populate wlan_info from OH port */
+	iface->wlan_info.vap_id = vap_id;
+	memcpy(iface->wlan_info.mac_addr, mac, 6);
+	iface->wlan_info.fman_idx = oh->oh_info.fman_idx;
+	iface->wlan_info.port_idx = oh->oh_info.port_idx;
+	iface->wlan_info.portid = oh->oh_info.portid;
+
+	dpa_add_port_to_list(iface);
+
+	DPA_INFO("cdx: devman: registered WiFi %s — itf_id=%u vap=%u "
+	    "portid=%u fman=%u port=%u\n", name, iface->itf_id, vap_id,
+	    iface->wlan_info.portid, iface->wlan_info.fman_idx,
+	    iface->wlan_info.port_idx);
+
+	return (0);
 }
 
 int
 dpa_update_wlan_if(struct _itf *itf, unsigned char *mac)
 {
-	return (-1);
+	struct dpa_iface_info *iface;
+
+	spin_lock(&dpa_devlist_lock);
+	iface = devman_find_by_itfid(itf->index);
+	if (iface == NULL) {
+		spin_unlock(&dpa_devlist_lock);
+		DPA_ERROR("cdx: dpa_update_wlan_if: itf_id=%u not found\n",
+		    itf->index);
+		return (-1);
+	}
+	memcpy(iface->wlan_info.mac_addr, mac, 6);
+	spin_unlock(&dpa_devlist_lock);
+	return (0);
+}
+
+/*
+ * dpaa_get_vap_fwd_fq — Get the TX FQID for WiFi-bound offloaded frames.
+ *
+ * CDX calls this to determine where to enqueue frames destined for a
+ * WiFi VAP.  Returns the WiFi OH port's default RX FQID — frames
+ * enqueued there are processed by the OH port and forwarded to WiFi.
+ */
+int
+dpaa_get_vap_fwd_fq(uint16_t vap_id, uint32_t *fqid, uint32_t hash)
+{
+	struct dpa_iface_info *oh;
+
+	oh = dpa_get_ohifinfo_by_portid(9);	/* WiFi OH port */
+	if (oh == NULL)
+		return (-1);
+
+	*fqid = oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+	return (0);
 }
 
 int

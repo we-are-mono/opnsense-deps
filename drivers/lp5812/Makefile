@@ -8,7 +8,6 @@
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 
-SYSDIR?=	${.CURDIR}/../../../opnsense-src/sys
 
 KMOD=	lp5812
 SRCS=	lp5812.c

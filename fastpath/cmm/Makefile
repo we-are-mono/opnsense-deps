@@ -27,12 +27,14 @@ SRCS=		cmm.c \
 		cmm_vlan.c \
 		cmm_ipsec.c \
 		cmm_tunnel.c \
-		cmm_ctrl.c
+		cmm_ctrl.c \
+		cmm_wifi.c
 
 CFLAGS+=	-I${.CURDIR}/../fci_lib
 CFLAGS+=	-I${.CURDIR}/../fci
 CFLAGS+=	-I${.CURDIR}/../include
 CFLAGS+=	-DLS1043
+CFLAGS+=	-DWIFI_ENABLE
 CFLAGS+=	-Wall -Wextra -Wno-unused-parameter
 
 # libfci
