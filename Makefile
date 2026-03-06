@@ -269,6 +269,7 @@ package: clean dist
 	# rc.d service scripts
 	install -m 755 ${PKG_RCDDIR}/cmm ${PKG_STAGEDIR}/usr/local/etc/rc.d/
 	install -m 755 ${PKG_RCDDIR}/fand ${PKG_STAGEDIR}/usr/local/etc/rc.d/
+	install -m 755 ${PKG_RCDDIR}/mwifiex_uap ${PKG_STAGEDIR}/usr/local/etc/rc.d/
 	# rc.syshook early scripts
 	install -m 755 ${PKG_RCDDIR}/01-growfs ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
 	install -m 755 ${PKG_RCDDIR}/02-mono-modules ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/

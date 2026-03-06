@@ -169,6 +169,9 @@ struct mwifiex_handle {
 	int			uap_bandwidth;		/* 20, 40, or 80 MHz */
 	char			uap_security[16];	/* open/wpa2/wpa3/wpa2wpa3 */
 	int			uap_hidden;		/* 0=broadcast, 1=hidden */
+	char			uap_country[4];		/* ISO 3166-1 alpha-2 */
+	int			uap_beacon_interval;	/* 20-1000 ms */
+	int			uap_dtim_period;	/* 1-255 */
 	volatile int		uap_started;		/* BSS is running */
 
 	/* Debug print control (sysctl dev.mwifiex.0.debug) */

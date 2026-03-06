@@ -505,6 +505,162 @@ out:
 	return (ret);
 }
 
+/*
+ * Clear any previously-injected custom management IEs (e.g. RSN IE for WPA3 PMF).
+ * Sends ie_index=0 with mgmt_subtype_mask=0 and ie_length=0 to delete slot 0.
+ */
+static void
+mwifiex_uap_clear_rsn_ie(struct mwifiex_handle *handle)
+{
+	mlan_ioctl_req req;
+	mlan_ds_misc_cfg *misc;
+	mlan_ds_misc_custom_ie *cust_ie;
+	custom_ie *ie;
+
+	misc = malloc(sizeof(*misc), M_MWIFIEX, M_WAITOK | M_ZERO);
+	cust_ie = &misc->param.cust_ie;
+
+	ie = &cust_ie->ie_data_list[0];
+	ie->ie_index = 0;		/* slot 0 */
+	ie->mgmt_subtype_mask = 0;	/* clear = delete */
+	ie->ie_length = 0;
+
+	cust_ie->type = 0x0169;		/* TLV_TYPE_MGMT_IE */
+	cust_ie->len = sizeof(t_u16) + sizeof(t_u16) + sizeof(t_u16);
+
+	memset(&req, 0, sizeof(req));
+	req.req_id = MLAN_IOCTL_MISC_CFG;
+	req.action = MLAN_ACT_SET;
+	req.bss_index = 1;
+	req.pbuf = (t_u8 *)misc;
+	req.buf_len = sizeof(*misc);
+	misc->sub_command = MLAN_OID_MISC_CUSTOM_IE;
+
+	mwifiex_do_ioctl(handle, &req);	/* ignore errors */
+	free(misc, M_MWIFIEX);
+}
+
+/*
+ * Inject a custom RSN IE with PMF capability bits into beacon, probe
+ * response, and association response frames.  WPA3-SAE mandates PMF
+ * (802.11w); without MFPC/MFPR in the RSN IE, clients reject the
+ * connection.  On Linux, hostapd builds this IE; since we don't use
+ * hostapd, we construct and inject it ourselves via MLAN_OID_MISC_CUSTOM_IE.
+ */
+static int
+mwifiex_uap_set_rsn_ie(struct mwifiex_handle *handle, int is_wpa3_only)
+{
+	mlan_ioctl_req req;
+	mlan_ds_misc_cfg *misc;
+	mlan_ds_misc_custom_ie *cust_ie;
+	custom_ie *ie;
+	uint8_t rsn[64];
+	int pos = 0;
+	uint16_t rsn_cap;
+	int ret;
+
+	misc = malloc(sizeof(*misc), M_MWIFIEX, M_WAITOK | M_ZERO);
+	cust_ie = &misc->param.cust_ie;
+
+	/* RSN IE body (after tag+length) */
+	/* Version: 1 */
+	rsn[pos++] = 1; rsn[pos++] = 0;
+	/* Group cipher: 00-0F-AC:4 (AES-CCMP) */
+	rsn[pos++] = 0x00; rsn[pos++] = 0x0F;
+	rsn[pos++] = 0xAC; rsn[pos++] = 0x04;
+	/* Pairwise cipher count: 1 */
+	rsn[pos++] = 1; rsn[pos++] = 0;
+	/* Pairwise cipher: 00-0F-AC:4 (AES-CCMP) */
+	rsn[pos++] = 0x00; rsn[pos++] = 0x0F;
+	rsn[pos++] = 0xAC; rsn[pos++] = 0x04;
+
+	if (is_wpa3_only) {
+		/* AKM count: 1, SAE only */
+		rsn[pos++] = 1; rsn[pos++] = 0;
+		rsn[pos++] = 0x00; rsn[pos++] = 0x0F;
+		rsn[pos++] = 0xAC; rsn[pos++] = 0x08;	/* SAE */
+	} else {
+		/* AKM count: 2, PSK + SAE */
+		rsn[pos++] = 2; rsn[pos++] = 0;
+		rsn[pos++] = 0x00; rsn[pos++] = 0x0F;
+		rsn[pos++] = 0xAC; rsn[pos++] = 0x02;	/* PSK */
+		rsn[pos++] = 0x00; rsn[pos++] = 0x0F;
+		rsn[pos++] = 0xAC; rsn[pos++] = 0x08;	/* SAE */
+	}
+
+	/* RSN Capabilities: MFPC=bit7, MFPR=bit6 */
+	rsn_cap = is_wpa3_only ? 0x00C0 : 0x0080;
+	rsn[pos++] = rsn_cap & 0xFF;
+	rsn[pos++] = (rsn_cap >> 8) & 0xFF;
+
+	/* Build the custom IE entry */
+	ie = &cust_ie->ie_data_list[0];
+	ie->ie_index = 0xFFFF;		/* auto-assign */
+	/* beacon(0x100) | probe_resp(0x20) | assoc_resp(0x02) */
+	ie->mgmt_subtype_mask = 0x122;
+	ie->ie_buffer[0] = 48;		/* RSN IE element ID */
+	ie->ie_buffer[1] = pos;	/* length of RSN body */
+	memcpy(&ie->ie_buffer[2], rsn, pos);
+	ie->ie_length = 2 + pos;
+
+	cust_ie->type = 0x0169;		/* TLV_TYPE_MGMT_IE */
+	cust_ie->len = sizeof(t_u16) + sizeof(t_u16) + sizeof(t_u16) +
+	    ie->ie_length;
+
+	memset(&req, 0, sizeof(req));
+	req.req_id = MLAN_IOCTL_MISC_CFG;
+	req.action = MLAN_ACT_SET;
+	req.bss_index = 1;
+	req.pbuf = (t_u8 *)misc;
+	req.buf_len = sizeof(*misc);
+	misc->sub_command = MLAN_OID_MISC_CUSTOM_IE;
+
+	ret = 0;
+	if (mwifiex_do_ioctl(handle, &req) != MLAN_STATUS_SUCCESS) {
+		device_printf(handle->sc->sc_dev,
+		    "UAP RSN IE injection failed\n");
+		ret = EIO;
+	}
+
+	free(misc, M_MWIFIEX);
+	return (ret);
+}
+
+/*
+ * Set regulatory country code via MLAN_OID_MISC_COUNTRY_CODE.
+ * Must be called before BSS config SET so firmware knows allowed
+ * channels and TX power limits for the configured country.
+ */
+static int
+mwifiex_uap_set_country(struct mwifiex_handle *handle)
+{
+	mlan_ioctl_req req;
+	mlan_ds_misc_cfg *misc;
+	int ret;
+
+	if (handle->uap_country[0] == '\0')
+		return (0);
+
+	misc = malloc(sizeof(*misc), M_MWIFIEX, M_WAITOK | M_ZERO);
+
+	memset(&req, 0, sizeof(req));
+	req.req_id = MLAN_IOCTL_MISC_CFG;
+	req.action = MLAN_ACT_SET;
+	req.bss_index = 1;
+	req.pbuf = (t_u8 *)misc;
+	req.buf_len = sizeof(*misc);
+	misc->sub_command = MLAN_OID_MISC_COUNTRY_CODE;
+	memcpy(misc->param.country_code.country_code,
+	    handle->uap_country, COUNTRY_CODE_LEN);
+
+	ret = 0;
+	if (mwifiex_do_ioctl(handle, &req) != MLAN_STATUS_SUCCESS)
+		ret = EIO;
+
+	free(misc, M_MWIFIEX);
+	return (ret);
+}
+
 static int
 mwifiex_uap_start(struct mwifiex_handle *handle)
 {
@@ -604,9 +760,16 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 		cfg->auth_mode = MLAN_AUTH_MODE_OPEN;
 		memset(&cfg->wpa_cfg, 0, sizeof(cfg->wpa_cfg));
 	} else if (strcmp(sec, "wpa3") == 0) {
-		cfg->protocol = PROTOCOL_WPA3_SAE;
+		/*
+		 * Use PROTOCOL_WPA2 (not PROTOCOL_WPA3_SAE): the mlan TLV
+		 * builder only emits AKMP/cipher/passphrase TLVs when
+		 * protocol matches WPA|WPA2|EAP.  KEY_MGMT_SAE tells
+		 * firmware to use SAE authentication instead of PSK.
+		 * This matches the Linux cfg80211 driver approach.
+		 */
+		cfg->protocol = PROTOCOL_WPA2;
 		cfg->key_mgmt = KEY_MGMT_SAE;
-		cfg->auth_mode = MLAN_AUTH_MODE_SAE;
+		cfg->auth_mode = MLAN_AUTH_MODE_OPEN;
 		cfg->pwe_derivation = SAE_PWE_BOTH;
 		cfg->wpa_cfg.pairwise_cipher_wpa2 = CIPHER_AES_CCMP;
 		cfg->wpa_cfg.group_cipher = CIPHER_AES_CCMP;
@@ -614,8 +777,12 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 		cfg->wpa_cfg.length = strlen(handle->uap_passphrase);
 		memcpy(cfg->wpa_cfg.passphrase, handle->uap_passphrase,
 		    cfg->wpa_cfg.length);
+		cfg->wpa_cfg.sae_password_length =
+		    strlen(handle->uap_passphrase);
+		memcpy(cfg->wpa_cfg.sae_password, handle->uap_passphrase,
+		    cfg->wpa_cfg.sae_password_length);
 	} else if (strcmp(sec, "wpa2wpa3") == 0) {
-		cfg->protocol = PROTOCOL_WPA2 | PROTOCOL_WPA3_SAE;
+		cfg->protocol = PROTOCOL_WPA2;
 		cfg->key_mgmt = KEY_MGMT_PSK | KEY_MGMT_SAE;
 		cfg->auth_mode = MLAN_AUTH_MODE_OPEN;
 		cfg->pwe_derivation = SAE_PWE_BOTH;
@@ -625,6 +792,10 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 		cfg->wpa_cfg.length = strlen(handle->uap_passphrase);
 		memcpy(cfg->wpa_cfg.passphrase, handle->uap_passphrase,
 		    cfg->wpa_cfg.length);
+		cfg->wpa_cfg.sae_password_length =
+		    strlen(handle->uap_passphrase);
+		memcpy(cfg->wpa_cfg.sae_password, handle->uap_passphrase,
+		    cfg->wpa_cfg.sae_password_length);
 	} else {
 		/* Default: WPA2-PSK */
 		cfg->protocol = PROTOCOL_WPA2;
@@ -651,10 +822,18 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 	if (bw >= 40)
 		cfg->supported_mcs_set[4] = 0x01; /* 40MHz MCS32 */
 
-	cfg->beacon_period = 100;
-	cfg->dtim_period = 1;
+	cfg->beacon_period = handle->uap_beacon_interval > 0 ?
+	    handle->uap_beacon_interval : 100;
+	cfg->dtim_period = handle->uap_dtim_period > 0 ?
+	    handle->uap_dtim_period : 1;
 	cfg->max_sta_count = handle->uap_max_sta > 0 ?
 	    handle->uap_max_sta : 10;
+
+	/* Step 5b: Clear stale custom RSN IE from previous start */
+	mwifiex_uap_clear_rsn_ie(handle);
+
+	/* Step 5c: Set country code (before BSS config SET) */
+	mwifiex_uap_set_country(handle);
 
 	/* Step 6: SET BSS config */
 	memset(&req, 0, sizeof(req));
@@ -671,6 +850,12 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 		free(bss, M_MWIFIEX);
 		return (EIO);
 	}
+
+	/* Step 6b: Inject custom RSN IE with PMF for WPA3 */
+	if (strcmp(sec, "wpa3") == 0)
+		mwifiex_uap_set_rsn_ie(handle, 1);
+	else if (strcmp(sec, "wpa2wpa3") == 0)
+		mwifiex_uap_set_rsn_ie(handle, 0);
 
 	/* Step 7: Enable 11ac VHT for 5GHz */
 	if (is_5ghz)
@@ -883,6 +1068,62 @@ mwifiex_sysctl_uap_hidden(SYSCTL_HANDLER_ARGS)
 	if (val != 0 && val != 1)
 		return (EINVAL);
 	handle->uap_hidden = val;
+	return (0);
+}
+
+static int
+mwifiex_sysctl_uap_country(SYSCTL_HANDLER_ARGS)
+{
+	struct mwifiex_handle *handle = (struct mwifiex_handle *)arg1;
+	char buf[4];
+	int error;
+
+	strlcpy(buf, handle->uap_country, sizeof(buf));
+	error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (error || req->newptr == NULL)
+		return (error);
+	/* Accept empty (firmware default) or exactly 2 uppercase chars */
+	if (buf[0] == '\0') {
+		handle->uap_country[0] = '\0';
+		return (0);
+	}
+	if (strlen(buf) != 2 ||
+	    buf[0] < 'A' || buf[0] > 'Z' ||
+	    buf[1] < 'A' || buf[1] > 'Z')
+		return (EINVAL);
+	strlcpy(handle->uap_country, buf, sizeof(handle->uap_country));
+	return (0);
+}
+
+static int
+mwifiex_sysctl_uap_beacon_interval(SYSCTL_HANDLER_ARGS)
+{
+	struct mwifiex_handle *handle = (struct mwifiex_handle *)arg1;
+	int val = handle->uap_beacon_interval;
+	int error;
+
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error || req->newptr == NULL)
+		return (error);
+	if (val < 20 || val > 1000)
+		return (EINVAL);
+	handle->uap_beacon_interval = val;
+	return (0);
+}
+
+static int
+mwifiex_sysctl_uap_dtim_period(SYSCTL_HANDLER_ARGS)
+{
+	struct mwifiex_handle *handle = (struct mwifiex_handle *)arg1;
+	int val = handle->uap_dtim_period;
+	int error;
+
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error || req->newptr == NULL)
+		return (error);
+	if (val < 1 || val > 255)
+		return (EINVAL);
+	handle->uap_dtim_period = val;
 	return (0);
 }
 
@@ -1285,6 +1526,9 @@ mwifiex_attach(device_t dev)
 				handle->uap_bandwidth = 80;
 				strlcpy(handle->uap_security, "wpa2",
 				    sizeof(handle->uap_security));
+				handle->uap_country[0] = '\0';
+				handle->uap_beacon_interval = 100;
+				handle->uap_dtim_period = 1;
 
 				SYSCTL_ADD_PROC(ctx,
 				    SYSCTL_CHILDREN(tree), OID_AUTO,
@@ -1342,6 +1586,30 @@ mwifiex_attach(device_t dev)
 				    handle, 0,
 				    mwifiex_sysctl_uap_hidden, "I",
 				    "UAP hidden SSID (0=broadcast, 1=hidden)");
+				SYSCTL_ADD_PROC(ctx,
+				    SYSCTL_CHILDREN(tree), OID_AUTO,
+				    "uap_country",
+				    CTLTYPE_STRING | CTLFLAG_RW |
+				    CTLFLAG_MPSAFE,
+				    handle, 0,
+				    mwifiex_sysctl_uap_country, "A",
+				    "UAP country code (e.g. US, DE, JP)");
+				SYSCTL_ADD_PROC(ctx,
+				    SYSCTL_CHILDREN(tree), OID_AUTO,
+				    "uap_beacon_interval",
+				    CTLTYPE_INT | CTLFLAG_RW |
+				    CTLFLAG_MPSAFE,
+				    handle, 0,
+				    mwifiex_sysctl_uap_beacon_interval, "I",
+				    "UAP beacon interval in ms (20-1000)");
+				SYSCTL_ADD_PROC(ctx,
+				    SYSCTL_CHILDREN(tree), OID_AUTO,
+				    "uap_dtim_period",
+				    CTLTYPE_INT | CTLFLAG_RW |
+				    CTLFLAG_MPSAFE,
+				    handle, 0,
+				    mwifiex_sysctl_uap_dtim_period, "I",
+				    "UAP DTIM period (1-255)");
 				SYSCTL_ADD_PROC(ctx,
 				    SYSCTL_CHILDREN(tree), OID_AUTO,
 				    "uap_sta_list",

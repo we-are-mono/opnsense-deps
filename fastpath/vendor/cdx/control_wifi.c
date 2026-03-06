@@ -72,7 +72,6 @@ static int wifi_vap_entry( U16 *ptr, U16 len )
 			if ( rxc->users >= MAX_WIFI_VAPS )
 				return CMD_ERR;
 
-			printk(KERN_INFO "%s:%d ADD entry \n", __func__, __LINE__);
 			if( wifiDesc[cmd.VAPID].VAPID != 0XFFFF )
 				return ERR_WLAN_DUPLICATE_OPERATION;
 
@@ -129,7 +128,6 @@ static U16 M_wifi_rx_cmdproc(U16 cmd_code, U16 cmd_len, U16 *pcmd)
 
 	acklen = 2;
 	ackstatus = CMD_OK;
-	printk(KERN_INFO "%s:%d\n", __func__, __LINE__);
 	switch (cmd_code)
 	{
 		case CMD_WIFI_VAP_ENTRY:
@@ -141,7 +139,6 @@ static U16 M_wifi_rx_cmdproc(U16 cmd_code, U16 cmd_len, U16 *pcmd)
 			{
 				wifi_vap_query_response_t *vaps;
 				vaps = (wifi_vap_query_response_t *)pcmd;
-				printk("%s:%d\n", __func__, __LINE__);
 
 				for (i = 0; i < MAX_WIFI_VAPS; i++)
 				{
@@ -158,7 +155,6 @@ static U16 M_wifi_rx_cmdproc(U16 cmd_code, U16 cmd_len, U16 *pcmd)
 			}
 
 		case CMD_WIFI_VAP_RESET:
-			printk(KERN_INFO "%s:%d\n", __func__, __LINE__);
 			for (i = 0; i < MAX_WIFI_VAPS; i++)
 			{
 				if( wifiDesc[i].VAPID != 0XFFFF )

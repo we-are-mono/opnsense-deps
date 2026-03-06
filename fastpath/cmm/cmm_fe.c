@@ -111,6 +111,10 @@ cmm_fe_route_register(struct cmm_global *g, struct cmm_route *rt)
 	if (rt->iif_index != 0) {
 		iif = cmm_itf_find_by_index(rt->iif_index);
 
+		/* Skip loopback input — CDX can't use it */
+		if (iif != NULL && strncmp(iif->ifname, "lo", 2) == 0)
+			iif = NULL;
+
 		if (iif == NULL) {
 			/*
 			 * Not in CMM table.  Try kernel directly to handle
@@ -118,7 +122,16 @@ cmm_fe_route_register(struct cmm_global *g, struct cmm_route *rt)
 			 */
 			char fallback[IFNAMSIZ];
 
-			if (if_indextoname(rt->iif_index, fallback) != NULL) {
+			if (if_indextoname(rt->iif_index, fallback) == NULL) {
+				cmm_print(CMM_LOG_WARN,
+				    "fe: route id=%u iif idx=%d "
+				    "does not exist",
+				    rt->fpp_id, rt->iif_index);
+				return (-1);
+			}
+			if (strncmp(fallback, "lo", 2) == 0) {
+				/* loopback — leave input_device empty */
+			} else {
 				cmm_print(CMM_LOG_WARN,
 				    "fe: route id=%u iif idx=%d (%s) "
 				    "not in CMM table, using kernel name",
@@ -127,12 +140,6 @@ cmm_fe_route_register(struct cmm_global *g, struct cmm_route *rt)
 				    sizeof(cmd.input_device));
 				strlcpy(cmd.underlying_input_device, fallback,
 				    sizeof(cmd.underlying_input_device));
-			} else {
-				cmm_print(CMM_LOG_WARN,
-				    "fe: route id=%u iif idx=%d "
-				    "does not exist",
-				    rt->fpp_id, rt->iif_index);
-				return (-1);
 			}
 		} else if (iif->itf_flags & ITF_F_BRIDGE) {
 			/*

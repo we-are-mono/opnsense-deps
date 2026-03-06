@@ -6,5 +6,11 @@ for mod in cdx auto_bridge pf_notify fci lp5812 sfpled emc2302 ina2xx pcf2131 tm
 	kldload ${mod} 2>/dev/null
 done
 
+# WiFi card is optional — only load driver if 88W9098 is present
+if pciconf -l 2>/dev/null | grep -q 'vendor=0x1b4b.*device=0x2b43'; then
+	kldload dpaa_wifi 2>/dev/null
+	kldload mwifiex 2>/dev/null
+fi
+
 # Status LED: dim white
 sysctl dev.lp5812.0.status_white=16 >/dev/null 2>&1

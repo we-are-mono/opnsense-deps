@@ -1,0 +1,109 @@
+#!/bin/sh
+#
+# PROVIDE: mwifiex_uap
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+#
+# mwifiex_uap — Configure and start the 88W9098 WiFi Access Point.
+# Settings are applied via sysctl to the mwifiex driver.
+#
+
+. /etc/rc.subr
+
+name="mwifiex_uap"
+rcvar="mwifiex_uap_enable"
+desc="Mono Gateway WiFi Access Point"
+
+start_cmd="mwifiex_uap_start"
+stop_cmd="mwifiex_uap_stop"
+status_cmd="mwifiex_uap_status"
+
+start_precmd="mwifiex_uap_prestart"
+
+mwifiex_uap_prestart()
+{
+	if ! kldstat -q -n mwifiex.ko; then
+		return 1
+	fi
+	# Wait for driver probe + firmware init (async, takes 2-3s)
+	local tries=0
+	while [ $tries -lt 20 ]; do
+		sysctl -n dev.mwifiex.0.uap_start >/dev/null 2>&1 && return 0
+		sleep 0.5
+		tries=$((tries + 1))
+	done
+	warn "mwifiex sysctl not available — skipping UAP"
+	return 1
+}
+
+mwifiex_uap_start()
+{
+	echo "Configuring ${name}."
+
+	# Stop if already running (re-apply settings)
+	sysctl -n dev.mwifiex.0.uap_start 2>/dev/null | grep -q '^1$' && \
+		sysctl dev.mwifiex.0.uap_start=0 >/dev/null 2>&1
+
+	# Apply settings from rc.conf variables
+	[ -n "${mwifiex_uap_ssid}" ] && \
+		sysctl dev.mwifiex.0.uap_ssid="${mwifiex_uap_ssid}" >/dev/null
+	[ -n "${mwifiex_uap_passphrase}" ] && \
+		sysctl dev.mwifiex.0.uap_passphrase="${mwifiex_uap_passphrase}" >/dev/null
+	[ -n "${mwifiex_uap_channel}" ] && \
+		sysctl dev.mwifiex.0.uap_channel="${mwifiex_uap_channel}" >/dev/null
+	[ -n "${mwifiex_uap_bandwidth}" ] && \
+		sysctl dev.mwifiex.0.uap_bandwidth="${mwifiex_uap_bandwidth}" >/dev/null
+	[ -n "${mwifiex_uap_security}" ] && \
+		sysctl dev.mwifiex.0.uap_security="${mwifiex_uap_security}" >/dev/null
+	[ -n "${mwifiex_uap_hidden}" ] && \
+		sysctl dev.mwifiex.0.uap_hidden="${mwifiex_uap_hidden}" >/dev/null
+	[ -n "${mwifiex_uap_max_sta}" ] && \
+		sysctl dev.mwifiex.0.uap_max_sta="${mwifiex_uap_max_sta}" >/dev/null
+	[ -n "${mwifiex_uap_country}" ] && \
+		sysctl dev.mwifiex.0.uap_country="${mwifiex_uap_country}" >/dev/null
+	[ -n "${mwifiex_uap_beacon_interval}" ] && \
+		sysctl dev.mwifiex.0.uap_beacon_interval="${mwifiex_uap_beacon_interval}" >/dev/null
+	[ -n "${mwifiex_uap_dtim_period}" ] && \
+		sysctl dev.mwifiex.0.uap_dtim_period="${mwifiex_uap_dtim_period}" >/dev/null
+
+	# Start the AP
+	sysctl dev.mwifiex.0.uap_start=1 >/dev/null
+	echo "Started ${name}."
+}
+
+mwifiex_uap_stop()
+{
+	sysctl dev.mwifiex.0.uap_start=0 >/dev/null 2>&1
+	echo "Stopped ${name}."
+}
+
+mwifiex_uap_status()
+{
+	local running
+	running=$(sysctl -n dev.mwifiex.0.uap_start 2>/dev/null)
+	if [ "$running" = "1" ]; then
+		echo "${name} is running."
+		sysctl dev.mwifiex.0.uap_ssid \
+		    dev.mwifiex.0.uap_channel \
+		    dev.mwifiex.0.uap_bandwidth \
+		    dev.mwifiex.0.uap_security 2>/dev/null
+	else
+		echo "${name} is not running."
+	fi
+}
+
+load_rc_config $name
+
+: ${mwifiex_uap_enable:="NO"}
+: ${mwifiex_uap_ssid:=""}
+: ${mwifiex_uap_passphrase:=""}
+: ${mwifiex_uap_channel:=""}
+: ${mwifiex_uap_bandwidth:=""}
+: ${mwifiex_uap_security:=""}
+: ${mwifiex_uap_hidden:=""}
+: ${mwifiex_uap_max_sta:=""}
+: ${mwifiex_uap_country:=""}
+: ${mwifiex_uap_beacon_interval:=""}
+: ${mwifiex_uap_dtim_period:=""}
+
+run_rc_command "$1"
