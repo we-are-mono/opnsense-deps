@@ -42,6 +42,7 @@
 #include <contrib/ncsw/inc/Peripherals/fm_ext.h>
 #include <contrib/ncsw/inc/Peripherals/fm_port_ext.h>
 #include <dev/dpaa/if_dtsec.h>
+#include <dev/dpaa/dpaa_oh.h>
 
 /* NCSW public QMan API — for QM_FQR_GetFqid, t_QmContextA */
 #include <contrib/ncsw/inc/Peripherals/qm_ext.h>
@@ -639,19 +640,22 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 			l2_info->pppoe_sess_id = cur->pppoe_info.session_id;
 			cur = cur->pppoe_info.parent;
 		} else if (cur->if_flags & IF_TYPE_WLAN) {
-			/* WiFi VAP — TX goes to the OH port */
+			/* WiFi VAP — TX goes to per-VAP FQ or OH default */
 			struct wlan_iface_info *wlan = &cur->wlan_info;
-			struct dpa_iface_info *oh;
 
 			memcpy(l2_info->l2hdr, rt_entry->dstmac, 6);
 			memcpy(l2_info->l2hdr + 6, wlan->mac_addr, 6);
 			l2_info->mtu = cur->mtu;
 			l2_info->is_wlan_iface = 1;
 
-			oh = dpa_get_ohifinfo_by_portid(wlan->portid);
-			if (oh != NULL)
-				l2_info->fqid =
-				    oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+			if (dpaa_oh_get_vap_fwd_fqid(wlan->vap_id,
+			    &l2_info->fqid, hash) != 0) {
+				struct dpa_iface_info *oh;
+				oh = dpa_get_ohifinfo_by_portid(wlan->portid);
+				if (oh != NULL)
+					l2_info->fqid =
+					    oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+			}
 			break;
 		} else if (cur->if_flags & IF_TYPE_ETHERNET) {
 			/* Reached physical port — extract TX info */
@@ -719,16 +723,19 @@ dpa_get_tx_l2info_by_itf(struct dpa_l2hdr_info *l2_info,
 		if (eth_parent->if_flags & IF_TYPE_WLAN) {
 			struct wlan_iface_info *wlan =
 			    &eth_parent->wlan_info;
-			struct dpa_iface_info *oh;
 
 			memcpy(l2_info->l2hdr + 6, wlan->mac_addr, 6);
 			l2_info->mtu = eth_parent->mtu;
 			l2_info->is_wlan_iface = 1;
 
-			oh = dpa_get_ohifinfo_by_portid(wlan->portid);
-			if (oh != NULL)
-				l2_info->fqid =
-				    oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+			if (dpaa_oh_get_vap_fwd_fqid(wlan->vap_id,
+			    &l2_info->fqid, hash) != 0) {
+				struct dpa_iface_info *oh;
+				oh = dpa_get_ohifinfo_by_portid(wlan->portid);
+				if (oh != NULL)
+					l2_info->fqid =
+					    oh->oh_info.fqinfo[RX_DEFA_FQ].fq_base;
+			}
 		} else {
 			struct eth_iface_info *eth =
 			    &eth_parent->eth_info;
@@ -1444,14 +1451,20 @@ dpa_update_wlan_if(struct _itf *itf, unsigned char *mac)
  * dpaa_get_vap_fwd_fq — Get the TX FQID for WiFi-bound offloaded frames.
  *
  * CDX calls this to determine where to enqueue frames destined for a
- * WiFi VAP.  Returns the WiFi OH port's default RX FQID — frames
- * enqueued there are processed by the OH port and forwarded to WiFi.
+ * WiFi VAP.  Uses per-VAP distribution FQs (64 per VAP, hash-distributed
+ * across CPU portals) when available, falling back to the OH port's
+ * default RX FQID for backwards compatibility.
  */
 int
 dpaa_get_vap_fwd_fq(uint16_t vap_id, uint32_t *fqid, uint32_t hash)
 {
 	struct dpa_iface_info *oh;
 
+	/* Try per-VAP distribution FQs first */
+	if (dpaa_oh_get_vap_fwd_fqid((int)vap_id, fqid, hash) == 0)
+		return (0);
+
+	/* Fallback: single OH default FQID */
 	oh = dpa_get_ohifinfo_by_portid(9);	/* WiFi OH port */
 	if (oh == NULL)
 		return (-1);

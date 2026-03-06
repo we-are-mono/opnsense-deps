@@ -85,6 +85,10 @@ struct mwifiex_dma_alloc {
 	SLIST_ENTRY(mwifiex_dma_alloc) link;
 };
 
+/* TX backpressure watermarks */
+#define MWIFIEX_TX_HIGH_WATER	256	/* reject above this */
+#define MWIFIEX_TX_LOW_WATER	128	/* resume below this */
+
 /*
  * Per-BSS private — one per interface (STA + UAP).
  * Analogous to Linux moal_private.
@@ -98,8 +102,9 @@ struct mwifiex_priv {
 	uint8_t			mac_addr[ETHER_ADDR_LEN];
 	volatile int		running;	/* IFF_DRV_RUNNING set */
 
-	/* TX pending count */
+	/* TX pending count and backpressure limit */
 	volatile int		tx_pending;
+	int			tx_pending_limit;
 
 	/* Statistics */
 	uint64_t		tx_packets;
@@ -165,6 +170,9 @@ struct mwifiex_handle {
 	char			uap_security[16];	/* open/wpa2/wpa3/wpa2wpa3 */
 	int			uap_hidden;		/* 0=broadcast, 1=hidden */
 	volatile int		uap_started;		/* BSS is running */
+
+	/* Debug print control (sysctl dev.mwifiex.0.debug) */
+	int			debug;			/* 0=errors only, 1=all */
 };
 
 /* Callback table setup (moal_shim_freebsd.c) */

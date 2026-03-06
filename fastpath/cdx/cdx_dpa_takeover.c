@@ -164,6 +164,18 @@ cdx_dist_fq_rx_callback(t_Handle app, t_Handle qm_fqr,
 	if (fn != NULL)
 		return (fn(fn_app, qm_fqr, qm_portal, fqid_offset, frame));
 
+	/*
+	 * OH port frames (app==NULL): try fallback callback.
+	 * dpaa_wifi registers this to handle CDX→WiFi download
+	 * frames that carry dtsec BPIDs (not registered by BPID).
+	 */
+	if (app == NULL) {
+		fn = dpaa_oh_lookup_dist_fallback(&fn_app);
+		if (fn != NULL)
+			return (fn(fn_app, qm_fqr, qm_portal,
+			    fqid_offset, frame));
+	}
+
 	frame_va = DPAA_FD_GET_ADDR(frame);
 	if (frame_va == NULL)
 		return (e_RX_STORE_RESPONSE_CONTINUE);

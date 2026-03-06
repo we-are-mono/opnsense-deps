@@ -393,6 +393,12 @@ pfn_dev_ioctl(struct cdev *dev __unused, u_long cmd, caddr_t data,
 		s->packets[1] += entries[i].packets[1];
 		s->bytes[0] += entries[i].bytes[0];
 		s->bytes[1] += entries[i].bytes[1];
+		/* Keep PF state alive while CDX is offloading the flow.
+		 * Without this, PF purges the state (UDP: 60s, TCP: 24h)
+		 * because offloaded packets bypass pf_test() and never
+		 * update expire.  Once PF purges the state, pf_notify
+		 * sends DELETE → CMM removes CDX flow → permanent death. */
+		s->expire = time_uptime;
 		PF_STATE_UNLOCK(s);
 		pfn_counter_updates++;
 	}

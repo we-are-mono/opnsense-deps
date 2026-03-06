@@ -8,6 +8,7 @@
  */
 
 #include "moal_freebsd.h"
+#include <sys/syslog.h>
 
 MALLOC_DEFINE(M_MWIFIEX, "mwifiex", "NXP mwifiex WiFi driver");
 
@@ -581,8 +582,13 @@ moal_send_packet_complete(t_void *pmoal, pmlan_buffer pmbuf,
 		m_freem(m);
 	free(pmbuf, M_MWIFIEX);
 
-	if (priv != NULL)
+	if (priv != NULL) {
 		atomic_subtract_int(&priv->tx_pending, 1);
+		/* Resume TX when queue drains below low watermark */
+		if (atomic_load_int(&priv->tx_pending) < MWIFIEX_TX_LOW_WATER &&
+		    (if_getdrvflags(priv->ifp) & IFF_DRV_OACTIVE))
+			if_setdrvflagbits(priv->ifp, 0, IFF_DRV_OACTIVE);
+	}
 
 	return MLAN_STATUS_SUCCESS;
 }
@@ -751,18 +757,36 @@ moal_recv_event(t_void *pmoal, pmlan_event pmevent)
 static t_void
 moal_print(t_void *pmoal, t_u32 level, char *pformat, IN ...)
 {
+	struct mwifiex_handle *handle = pmoal;
 	__va_list args;
+	char buf[256];
+	int pri;
 
-#ifdef DEBUG_LEVEL1
-	/* Only print errors and fatal by default */
-	if (level > MERROR && level != MFATAL)
+	/*
+	 * MFATAL (bit 1): always to console via printf().
+	 * MERROR (bit 2): always to syslog via log() (not console).
+	 * Everything else: only when debug sysctl is set.
+	 */
+	if (level == MFATAL) {
+		va_start(args, pformat);
+		printf("mwifiex: ");
+		vprintf(pformat, args);
+		va_end(args);
 		return;
-#endif
+	}
 
-	printf("[moal_print L%u] ", level);
+	if (level == MERROR) {
+		pri = LOG_WARNING;
+	} else {
+		if (handle == NULL || !handle->debug)
+			return;
+		pri = LOG_DEBUG;
+	}
+
 	va_start(args, pformat);
-	vprintf(pformat, args);
+	vsnprintf(buf, sizeof(buf), pformat, args);
 	va_end(args);
+	log(pri, "mwifiex: %s", buf);
 }
 
 static t_void

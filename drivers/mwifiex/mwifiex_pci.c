@@ -44,8 +44,15 @@ mwifiex_main_task(void *arg, int pending)
 {
 	struct mwifiex_handle *handle = arg;
 
-	if (handle->pmlan_adapter != NULL)
-		mlan_main_process(handle->pmlan_adapter);
+	if (handle->pmlan_adapter == NULL)
+		return;
+	/*
+	 * MLAN_STATUS_PENDING means mlan_main_process hit its restart
+	 * limit and yielded.  Reschedule so remaining WMM queue entries
+	 * get processed after completion tasks have had a chance to run.
+	 */
+	if (mlan_main_process(handle->pmlan_adapter) == MLAN_STATUS_PENDING)
+		taskqueue_enqueue(taskqueue_fast, &handle->main_task);
 }
 
 static void
@@ -195,6 +202,14 @@ mwifiex_if_transmit(if_t ifp, struct mbuf *m)
 		return (ENETDOWN);
 	}
 
+	/* Backpressure: reject when TX queue is deep */
+	if (__predict_false(atomic_load_int(&priv->tx_pending) >=
+	    priv->tx_pending_limit)) {
+		if_setdrvflagbits(ifp, IFF_DRV_OACTIVE, 0);
+		m_freem(m);
+		return (ENOBUFS);
+	}
+
 	/*
 	 * mlan needs MLAN_MIN_DATA_HEADER_LEN (64) bytes of headroom
 	 * before packet data for the TxPD descriptor.  Prepend space.
@@ -281,6 +296,7 @@ mwifiex_create_iface(struct mwifiex_softc *sc, int bss_index, int bss_type)
 	priv->bss_type = bss_type;
 	priv->bss_role = (bss_type == MLAN_BSS_TYPE_UAP) ?
 	    MLAN_BSS_ROLE_UAP : MLAN_BSS_ROLE_STA;
+	priv->tx_pending_limit = MWIFIEX_TX_HIGH_WATER;
 
 	/* Get MAC address from firmware */
 	if (mwifiex_get_fw_info(handle, bss_index, priv->mac_addr) != 0) {
@@ -561,6 +577,26 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 	cfg->bandcfg.chan2Offset = mwifiex_chan2_offset(ch, bw);
 	cfg->bandcfg.scanMode = 0;		/* manual channel */
 
+	/*
+	 * Rates must match the band.  The GET above returned defaults
+	 * for the previously-configured band (2.4 GHz CCK+OFDM).
+	 * 5 GHz requires OFDM-only rates; sending CCK rates on 5 GHz
+	 * causes firmware to reject BSS_START.
+	 */
+	memset(cfg->rates, 0, sizeof(cfg->rates));
+	if (is_5ghz) {
+		static const t_u8 rates_a[] = {
+			0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
+		};
+		memcpy(cfg->rates, rates_a, sizeof(rates_a));
+	} else {
+		static const t_u8 rates_bg[] = {
+			0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18,
+			0x24, 0x30, 0x48, 0x60, 0x6c
+		};
+		memcpy(cfg->rates, rates_bg, sizeof(rates_bg));
+	}
+
 	/* Step 4: Security */
 	if (is_open) {
 		cfg->protocol = PROTOCOL_NO_SECURITY;
@@ -602,14 +638,18 @@ mwifiex_uap_start(struct mwifiex_handle *handle)
 		    cfg->wpa_cfg.length);
 	}
 
-	/* Step 5: 11n HT — enable for WPA2+ security */
-	if (!is_open) {
-		cfg->supported_mcs_set[0] = 0xFF;	/* MCS 0-7 */
-		if (fwi.usr_dev_mcs_support == HT_STREAM_MODE_2X2)
-			cfg->supported_mcs_set[1] = 0xFF; /* MCS 8-15 (2x2) */
-		if (bw >= 40)
-			cfg->supported_mcs_set[4] = 0x01; /* 40MHz MCS32 */
+	/* Step 5: 11n HT capabilities (match Linux moal_uap_cfg80211.c) */
+	cfg->ht_cap_info = 0x10c;	/* SM Power Save disabled + Rx STBC */
+	cfg->ht_cap_info |= 0x20;	/* Short GI for 20 MHz */
+	if (bw >= 40) {
+		cfg->ht_cap_info |= 0x1042; /* 40 MHz + Short GI 40 + DSSS/CCK */
+		cfg->ampdu_param = 3;	/* max A-MPDU 65535 bytes */
 	}
+	cfg->supported_mcs_set[0] = 0xFF;	/* MCS 0-7 */
+	if (fwi.usr_dev_mcs_support == HT_STREAM_MODE_2X2)
+		cfg->supported_mcs_set[1] = 0xFF; /* MCS 8-15 (2x2) */
+	if (bw >= 40)
+		cfg->supported_mcs_set[4] = 0x01; /* 40MHz MCS32 */
 
 	cfg->beacon_period = 100;
 	cfg->dtim_period = 1;
@@ -1240,7 +1280,7 @@ mwifiex_attach(device_t dev)
 				ctx = device_get_sysctl_ctx(dev);
 				tree = device_get_sysctl_tree(dev);
 
-				handle->uap_channel = 6;
+				handle->uap_channel = 36;
 				handle->uap_max_sta = 10;
 				handle->uap_bandwidth = 80;
 				strlcpy(handle->uap_security, "wpa2",
@@ -1326,6 +1366,17 @@ mwifiex_attach(device_t dev)
 				    handle, 0,
 				    mwifiex_sysctl_uap_start, "I",
 				    "Write 1 to start UAP, 0 to stop");
+				SYSCTL_ADD_INT(ctx,
+				    SYSCTL_CHILDREN(tree), OID_AUTO,
+				    "tx_pending_limit", CTLFLAG_RW,
+				    &handle->priv[1]->tx_pending_limit,
+				    0,
+				    "TX pending high watermark");
+				SYSCTL_ADD_INT(ctx,
+				    SYSCTL_CHILDREN(tree), OID_AUTO,
+				    "debug", CTLFLAG_RW,
+				    &handle->debug, 0,
+				    "Debug print level (0=errors only, 1=all)");
 			}
 		}
 	} else {
