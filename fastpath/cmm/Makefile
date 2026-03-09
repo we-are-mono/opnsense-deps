@@ -24,6 +24,7 @@ SRCS=		cmm.c \
 		cmm_rtsock.c \
 		cmm_fe.c \
 		cmm_offload.c \
+		cmm_lagg.c \
 		cmm_vlan.c \
 		cmm_ipsec.c \
 		cmm_tunnel.c \

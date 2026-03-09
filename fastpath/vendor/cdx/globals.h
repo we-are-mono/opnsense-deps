@@ -39,6 +39,7 @@ GLOBAL_DEFINE struct physical_port phy_port[MAX_PHY_PORTS];
 GLOBAL_DEFINE struct slist_head rt_cache[NUM_ROUTE_ENTRIES] __attribute__((aligned(32)));
 GLOBAL_DEFINE struct slist_head ct_cache[NUM_CT_ENTRIES] __attribute__((aligned(32)));
 GLOBAL_DEFINE struct slist_head vlan_cache[NUM_VLAN_ENTRIES];
+GLOBAL_DEFINE struct slist_head lagg_cache[NUM_LAGG_ENTRIES];
 GLOBAL_DEFINE struct slist_head pppoe_cache[NUM_PPPOE_ENTRIES];
 GLOBAL_DEFINE struct slist_head tunnel_name_cache[NUM_TUNNEL_ENTRIES];
 

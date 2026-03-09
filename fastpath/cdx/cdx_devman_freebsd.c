@@ -313,6 +313,48 @@ dpa_add_vlan_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 }
 
 /* ================================================================
+ * dpa_add_lagg_if — Register a LAGG (link aggregation) interface
+ *
+ * LAGG is transparent to header manipulation. It only provides a
+ * traversable node in the interface chain (VLAN→LAGG→ETH) so that
+ * route resolution can find the physical port.
+ * ================================================================ */
+
+int
+dpa_add_lagg_if(char *name, struct _itf *itf, struct _itf *phys_itf,
+    uint8_t *mac_addr)
+{
+	struct dpa_iface_info *iface, *parent;
+
+	parent = devman_find_by_itfid(phys_itf->index);
+	if (parent == NULL) {
+		DPA_ERROR("cdx: devman: LAGG parent itf_id=%u not found\n",
+		    phys_itf->index);
+		return (-1);
+	}
+
+	iface = kzalloc(sizeof(*iface), GFP_KERNEL);
+	if (iface == NULL)
+		return (-1);
+
+	strlcpy((char *)iface->name, name, IF_NAME_SIZE);
+	iface->itf_id = itf->index;
+	iface->if_flags = IF_TYPE_LAGG;
+	iface->mtu = parent->mtu;
+
+	iface->lagg_info.parent = parent;
+	if (mac_addr)
+		memcpy(iface->lagg_info.mac_addr, mac_addr, 6);
+
+	dpa_add_port_to_list(iface);
+
+	DPA_INFO("cdx: devman: registered LAGG %s — itf_id=%u "
+	    "parent=%s\n", name, iface->itf_id, (char *)parent->name);
+
+	return (0);
+}
+
+/* ================================================================
  * dpa_add_pppoe_if — Register a PPPoE sub-interface
  * ================================================================ */
 
@@ -404,6 +446,8 @@ devman_find_eth_parent(struct dpa_iface_info *iface)
 			return (iface);
 		if (iface->if_flags & IF_TYPE_VLAN)
 			iface = iface->vlan_info.parent;
+		else if (iface->if_flags & IF_TYPE_LAGG)
+			iface = iface->lagg_info.parent;
 		else if (iface->if_flags & IF_TYPE_PPPOE)
 			iface = iface->pppoe_info.parent;
 		else
@@ -651,6 +695,8 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 				l2_info->num_egress_vlan_hdrs++;
 			}
 			cur = cur->vlan_info.parent;
+		} else if (cur->if_flags & IF_TYPE_LAGG) {
+			cur = cur->lagg_info.parent;
 		} else if (cur->if_flags & IF_TYPE_PPPOE) {
 			l2_info->pppoe_present = 1;
 			l2_info->pppoe_sess_id = cur->pppoe_info.session_id;
@@ -1535,6 +1581,10 @@ dpa_get_num_vlan_iface_stats_entries(uint32_t iif_index,
 			iface_info = iface_info->vlan_info.parent;
 			continue;
 		}
+		if (iface_info->if_flags & IF_TYPE_LAGG) {
+			iface_info = iface_info->lagg_info.parent;
+			continue;
+		}
 		if (iface_info->if_flags & IF_TYPE_PPPOE) {
 			iface_info = iface_info->pppoe_info.parent;
 			continue;
@@ -1642,6 +1692,10 @@ dpa_get_iface_stats_entries(uint32_t iif_index,
 			iface_info = iface_info->vlan_info.parent;
 			continue;
 		}
+		if (iface_info->if_flags & IF_TYPE_LAGG) {
+			iface_info = iface_info->lagg_info.parent;
+			continue;
+		}
 		if (iface_info->if_flags & IF_TYPE_PPPOE) {
 			iface_info = iface_info->pppoe_info.parent;
 			continue;
@@ -1704,6 +1758,11 @@ dpa_check_for_logical_iface_types(struct _itf *input_itf,
 			    iface_info->vlan_info.vlan_id;
 			l2_info->num_ingress_vlan_hdrs++;
 			iface_info = iface_info->vlan_info.parent;
+			continue;
+		}
+		if (iface_info->if_flags & IF_TYPE_LAGG) {
+			/* LAGG is header-transparent — just follow parent */
+			iface_info = iface_info->lagg_info.parent;
 			continue;
 		}
 		if (iface_info->if_flags & IF_TYPE_PPPOE) {
@@ -1837,6 +1896,10 @@ dpa_get_l2l3_info_by_itf_id(uint32_t itf_id,
 				l2_info->num_egress_vlan_hdrs++;
 			}
 			iface_info = iface_info->vlan_info.parent;
+			continue;
+		}
+		if (iface_info->if_flags & IF_TYPE_LAGG) {
+			iface_info = iface_info->lagg_info.parent;
 			continue;
 		}
 		if (iface_info->if_flags & IF_TYPE_PPPOE) {

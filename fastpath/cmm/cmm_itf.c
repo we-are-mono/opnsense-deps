@@ -14,7 +14,9 @@
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_types.h>
+#include <net/ethernet.h>
 #include <net/if_vlan_var.h>
+#include <net/if_lagg.h>
 #include <net/route.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -29,6 +31,7 @@
 #include "cmm_tunnel.h"
 #include "cmm_bridge.h"
 #include "cmm_wifi.h"
+#include "cmm_lagg.h"
 
 static struct list_head itf_hash[ITF_HASH_SIZE];
 
@@ -188,6 +191,39 @@ itf_detect_vlan(struct cmm_interface *itf, int sd)
 	    itf->parent_ifindex);
 }
 
+/*
+ * Probe an interface for LAGG membership using SIOCGLAGG.
+ * If successful, records the first active member port name and
+ * its ifindex as parent_ifindex, and sets ITF_F_LAGG.
+ */
+static void
+itf_detect_lagg(struct cmm_interface *itf, int sd)
+{
+	struct lagg_reqall ra;
+	struct lagg_reqport rp;
+
+	memset(&ra, 0, sizeof(ra));
+	strlcpy(ra.ra_ifname, itf->ifname, sizeof(ra.ra_ifname));
+	ra.ra_size = sizeof(rp);
+	ra.ra_port = &rp;
+
+	if (ioctl(sd, SIOCGLAGG, &ra) < 0)
+		return;		/* Not a LAGG interface */
+	if (ra.ra_ports < 1)
+		return;		/* No member ports */
+
+	/* Use the first member port as the active port */
+	strlcpy(itf->lagg_active_port, rp.rp_portname,
+	    sizeof(itf->lagg_active_port));
+	itf->parent_ifindex = if_nametoindex(rp.rp_portname);
+	itf->itf_flags |= ITF_F_LAGG;
+
+	cmm_print(CMM_LOG_INFO,
+	    "itf: %s is LAGG (member=%s parent idx=%d)",
+	    itf->ifname, itf->lagg_active_port,
+	    itf->parent_ifindex);
+}
+
 int
 cmm_itf_init(void)
 {
@@ -247,6 +283,7 @@ cmm_itf_init(void)
 					    sizeof(ifr.ifr_name));
 					if (ioctl(sd, SIOCGIFMTU, &ifr) == 0)
 						itf->mtu = ifr.ifr_mtu;
+					itf_detect_lagg(itf, sd);
 					itf_detect_vlan(itf, sd);
 					itf_detect_tunnel(itf, sd);
 					close(sd);
@@ -387,6 +424,7 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 				    sizeof(ifr.ifr_name));
 				if (ioctl(sd, SIOCGIFMTU, &ifr) == 0)
 					itf->mtu = ifr.ifr_mtu;
+				itf_detect_lagg(itf, sd);
 				itf_detect_vlan(itf, sd);
 				itf_detect_tunnel(itf, sd);
 				close(sd);
@@ -421,7 +459,8 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 		itf->mtu = ifm->ifm_data.ifi_mtu;
 	}
 
-	/* Notify VLAN, tunnel, WiFi, and bridge modules of flag changes */
+	/* Notify LAGG, VLAN, tunnel, WiFi, and bridge modules of flag changes */
+	cmm_lagg_notify(g, itf);
 	cmm_vlan_notify(g, itf);
 	cmm_tunnel_notify(g, itf);
 	cmm_wifi_notify(g, itf);
@@ -590,6 +629,24 @@ cmm_itf_foreach_vlan(struct cmm_global *g, cmm_itf_vlan_fn fn)
 		    pos = list_next(pos)) {
 			itf = container_of(pos, struct cmm_interface, entry);
 			if (itf->itf_flags & ITF_F_VLAN)
+				fn(g, itf);
+		}
+	}
+}
+
+void
+cmm_itf_foreach_lagg(struct cmm_global *g, cmm_itf_lagg_fn fn)
+{
+	struct list_head *bucket, *pos;
+	struct cmm_interface *itf;
+	int i;
+
+	for (i = 0; i < ITF_HASH_SIZE; i++) {
+		bucket = &itf_hash[i];
+		for (pos = list_first(bucket); pos != bucket;
+		    pos = list_next(pos)) {
+			itf = container_of(pos, struct cmm_interface, entry);
+			if (itf->itf_flags & ITF_F_LAGG)
 				fn(g, itf);
 		}
 	}

@@ -88,6 +88,10 @@
 #define FPP_ERR_MC_INVALID_ADDR                         704
 #define FPP_ERR_MC_INTERFACE_NOT_ALLOWED                705
 
+/*-------------------------------- LAGG --------------------------------------*/
+#define FPP_ERR_LAGG_ENTRY_ALREADY_REGISTERED           850
+#define FPP_ERR_LAGG_ENTRY_NOT_FOUND                    851
+
 /*-------------------------------- PPPoE -------------------------------------*/
 #define FPP_ERR_PPPOE_ENTRY_ALREADY_REGISTERED          800
 #define FPP_ERR_PPPOE_ENTRY_NOT_FOUND                   801
@@ -1693,6 +1697,20 @@ typedef struct fpp_vlan_cmd {
     unsigned char unused[2];
 #endif
 } __attribute__((__packed__)) fpp_vlan_cmd_t;
+
+/*-------------------------------- LAGG --------------------------------------*/
+#define FPP_CMD_LAGG_ENTRY                              0x1701
+#define FPP_CMD_LAGG_RESET                              0x1702
+
+/* LAGG command as understood by FPP */
+typedef struct fpp_lagg_cmd {
+    u_int16_t   action;
+    u_int16_t   pad;
+    char        lagg_ifname[IFNAMSIZ];
+    char        lagg_phy_ifname[IFNAMSIZ];
+    unsigned char macaddr[6];
+    unsigned char unused[2];
+} __attribute__((__packed__)) fpp_lagg_cmd_t;
 
 /*-------------------------------- MacVlan -----------------------------------*/
 #define FPP_CMD_MACVLAN_ENTRY                           0x1401

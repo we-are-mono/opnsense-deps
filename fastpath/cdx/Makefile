@@ -22,7 +22,7 @@ SRCS=	cdx_main_freebsd.c cdx_timer_freebsd.c cdx_cmdhandler_freebsd.c \
 # Tier 1 CDX sources (from original CDX tree, mostly unchanged)
 SRCS+=	cdx_hal.c \
 	layer2.c control_ipv4.c control_ipv6.c control_tx.c control_rx.c \
-	control_vlan.c control_pppoe.c control_bridge.c control_tunnel.c \
+	control_vlan.c control_lagg.c control_pppoe.c control_bridge.c control_tunnel.c \
 	control_socket.c control_stat.c control_natpt.c control_qm.c \
 	control_wifi.c control_ipsec.c control_rtp_relay.c \
 	control_pktcap.c \
@@ -75,6 +75,7 @@ CFLAGS.control_ipv6.c+=		${VENDOR_WARN}
 CFLAGS.control_tx.c+=		${VENDOR_WARN}
 CFLAGS.control_rx.c+=		${VENDOR_WARN}
 CFLAGS.control_vlan.c+=		${VENDOR_WARN}
+CFLAGS.control_lagg.c+=		${VENDOR_WARN}
 CFLAGS.control_pppoe.c+=	${VENDOR_WARN}
 CFLAGS.control_bridge.c+=	${VENDOR_WARN}
 CFLAGS.control_tunnel.c+=	${VENDOR_WARN}

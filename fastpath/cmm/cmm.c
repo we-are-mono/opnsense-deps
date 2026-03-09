@@ -30,6 +30,7 @@
 #include "cmm_route.h"
 #include "cmm_conn.h"
 #include "cmm_fe.h"
+#include "cmm_lagg.h"
 #include "cmm_vlan.h"
 #include "cmm_ipsec.h"
 #include "cmm_tunnel.h"
@@ -247,6 +248,7 @@ main(int argc, char *argv[])
 	/* Initialize subsystems */
 	if (cmm_itf_init() < 0)
 		goto out;
+	cmm_lagg_init(g);
 	cmm_vlan_init(g);
 	if (cmm_neigh_init() < 0)
 		goto out;
@@ -441,6 +443,7 @@ out:
 	cmm_l2tp_fini(g);
 	cmm_tunnel_fini(g);
 	cmm_vlan_fini(g);
+	cmm_lagg_fini(g);
 	cmm_fe_reset(g);
 
 	cmm_deny_fini();

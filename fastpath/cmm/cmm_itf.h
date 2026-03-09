@@ -32,6 +32,8 @@ struct cmm_ifaddr {
 #define ITF_F_FPP_L2TP		(1 << 6)	/* L2TP registered in CDX */
 #define ITF_F_WIFI		(1 << 7)	/* WiFi VAP interface */
 #define ITF_F_FPP_WIFI		(1 << 8)	/* WiFi VAP registered in CDX */
+#define ITF_F_LAGG		(1 << 9)	/* LAGG (link aggregation) */
+#define ITF_F_FPP_LAGG		(1 << 10)	/* LAGG registered in CDX */
 
 struct cmm_route;
 
@@ -59,6 +61,8 @@ struct cmm_interface {
 	uint16_t		l2tp_peer_ses_id;
 	uint16_t		l2tp_options;
 	uint16_t		l2tp_sock_id;	/* cmm_socket ID */
+	/* LAGG state (valid when ITF_F_LAGG set) */
+	char			lagg_active_port[IFNAMSIZ];
 };
 
 /* Initialize interface table from getifaddrs */
@@ -94,6 +98,10 @@ void cmm_itf_foreach_l2tp(struct cmm_global *g, cmm_itf_l2tp_fn fn);
 /* Iterate all WiFi interfaces, calling fn for each with ITF_F_WIFI set */
 typedef int (*cmm_itf_wifi_fn)(struct cmm_global *, struct cmm_interface *);
 void cmm_itf_foreach_wifi(struct cmm_global *g, cmm_itf_wifi_fn fn);
+
+/* Iterate all LAGG interfaces, calling fn for each with ITF_F_LAGG set */
+typedef int (*cmm_itf_lagg_fn)(struct cmm_global *, struct cmm_interface *);
+void cmm_itf_foreach_lagg(struct cmm_global *g, cmm_itf_lagg_fn fn);
 
 /* Probe interface for tunnel endpoints (gif/gre) */
 void itf_detect_tunnel(struct cmm_interface *itf, int sd);

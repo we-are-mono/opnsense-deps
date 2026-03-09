@@ -113,6 +113,13 @@ struct vlan_iface_info {
 	uint8_t br_mac_addr[ETH_ALEN]; 	/* Bridge mac address stored if interface is part of bridge group */
 };
 
+//lagg (link aggregation) device information
+struct lagg_iface_info {
+	struct dpa_iface_info *parent;	/* first active member port */
+	uint8_t mac_addr[ETH_ALEN];
+	uint8_t pad[2];
+};
+
 //pppoe device information
 struct pppoe_iface_info {
 	struct dpa_iface_info *parent;
@@ -170,6 +177,7 @@ struct dpa_iface_info {
 	union {
 		struct eth_iface_info eth_info; //info if iface type is eth
 		struct vlan_iface_info vlan_info; //info if type is vlan
+		struct lagg_iface_info lagg_info; //info if type is lagg
 		struct pppoe_iface_info pppoe_info; //info if type is pppoe
 		struct tunnel_iface_info tunnel_info; //info if type is tunnel
 		struct wlan_iface_info wlan_info; //internal wlan  info

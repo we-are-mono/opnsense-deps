@@ -33,6 +33,7 @@ int dpa_add_eth_if(char *name, struct _itf *itf, struct _itf *phys_itf);
 int dpa_add_pppoe_if(char *name, struct _itf *itf, struct _itf *phys_itf, 
 		uint8_t *mac_addr, uint16_t session_id);
 int dpa_add_vlan_if(char *name, struct _itf *itf, struct _itf *phys_itf, uint16_t vlan_id, uint8_t *mac_addr);
+int dpa_add_lagg_if(char *name, struct _itf *itf, struct _itf *phys_itf, uint8_t *mac_addr);
 int dpa_add_wlan_if(char *name, struct _itf *itf, uint32_t vap_id, unsigned char* mac);
 int dpa_update_wlan_if(struct _itf *itf, unsigned char* mac);
 int dpa_set_bridged_itf(uint8_t* ifname, uint8_t is_bridged, uint8_t* br_mac_addr);

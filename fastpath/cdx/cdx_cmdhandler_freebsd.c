@@ -76,6 +76,7 @@ FCODE_TO_EVENT(U32 fcode)
 	case FC_FPPDIAG: eventid = EVENT_IPV4; break;
 	case FC_ICC: eventid = EVENT_ICC; break;
 	case FC_L2TP: eventid = EVENT_L2TP; break;
+	case FC_LAGG: eventid = EVENT_LAGG; break;
 	default: eventid = -1; break;
 	}
 
@@ -162,6 +163,7 @@ CMD_DECLARE(mc4)
 CMD_DECLARE(mc6)
 CMD_DECLARE(rtp_relay)
 CMD_DECLARE(pktcap)
+CMD_DECLARE(lagg)
 
 int
 cdx_cmdhandler_init(void)
@@ -172,6 +174,7 @@ cdx_cmdhandler_init(void)
 	CMD_INIT(rx);
 	CMD_INIT(pppoe);
 	CMD_INIT(vlan);
+	CMD_INIT(lagg);
 	CMD_INIT(ipv4);
 	CMD_INIT(ipv6);
 	CMD_INIT(socket);
@@ -219,6 +222,7 @@ cdx_cmdhandler_exit(void)
 	CMD_EXIT(socket);
 	CMD_EXIT(ipv6);
 	CMD_EXIT(ipv4);
+	CMD_EXIT(lagg);
 	CMD_EXIT(vlan);
 	CMD_EXIT(pppoe);
 	CMD_EXIT(rx);

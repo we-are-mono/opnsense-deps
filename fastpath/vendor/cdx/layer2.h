@@ -47,6 +47,7 @@
 //The following definition will not be used in if structures
 //defined here as others are also used in the dpaoffload layers.
 #define IF_TYPE_OFPORT		(1 << 8)
+#define IF_TYPE_LAGG		(1 << 9)
 #define IF_STATS_ENABLED	(1 << 10)
 
 

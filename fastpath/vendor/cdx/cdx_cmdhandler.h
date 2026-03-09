@@ -47,6 +47,7 @@ enum EVENTS {
 	EVENT_PKTCAP,
 	EVENT_ICC,
 	EVENT_L2TP,
+	EVENT_LAGG,
 	EVENT_HIDRV,
 	EVENT_MC, 
 	EVENT_MAX
@@ -328,6 +329,11 @@ enum EVENTS {
 #define FC_L2TP					0x0016
 #define CMD_L2TP_ITF_ADD		0x1600
 #define CMD_L2TP_ITF_DEL		0x1601
+
+// 0x1700: LAGG (link aggregation)
+#define FC_LAGG				0x0017
+#define CMD_LAGG_ENTRY			0x1701
+#define CMD_LAGG_RESET			0x1702
 
 // return codes
 #define CMD_OK	0x0000
