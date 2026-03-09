@@ -86,7 +86,9 @@ static U16 Vlan_handle_entry(U16 * p,U16 Length)
 	POnifDesc phys_onif;
 	int reset_action = 0;
 	U32 hash;
+#ifndef NCSW_FREEBSD
 	struct net_device *device = NULL, *parent_device = NULL;
+#endif
 	int rc = NO_ERR;
 
 	// Check length
@@ -98,9 +100,11 @@ static U16 Vlan_handle_entry(U16 * p,U16 Length)
 
 	switch(vlancmd.action)
 	{
-		case ACTION_DEREGISTER: 
+		case ACTION_DEREGISTER:
 
+#ifndef NCSW_FREEBSD
 			device = dev_get_by_name(&init_net, vlancmd.vlanifname);
+#endif
 
 			slist_for_each(pEntry, entry, &vlan_cache[hash], list)
 			{
@@ -112,14 +116,17 @@ static U16 Vlan_handle_entry(U16 * p,U16 Length)
 			break;
 
 found:
+#ifndef NCSW_FREEBSD
 			if (device)
 				device->wifi_offload_dev = NULL;
+#endif
 			vlan_remove(pEntry);
 			vlan_free(pEntry);
 			break;
 
-		case ACTION_REGISTER: 
+		case ACTION_REGISTER:
 
+#ifndef NCSW_FREEBSD
 			device = dev_get_by_name(&init_net, vlancmd.vlanifname);
 			parent_device = dev_get_by_name(&init_net, vlancmd.phyifname);
 
@@ -128,6 +135,7 @@ found:
 				rc = FAILURE;
 				break;
 			}
+#endif
 
 			if (get_onif_by_name(vlancmd.vlanifname))
 			{
@@ -175,8 +183,10 @@ found:
 				break;
 			}
 
+#ifndef NCSW_FREEBSD
 			if(parent_device->wifi_offload_dev)
 				device->wifi_offload_dev = parent_device->wifi_offload_dev;
+#endif
 
 			vlan_add(pEntry);
 
@@ -197,10 +207,12 @@ found:
 			return ERR_UNKNOWN_ACTION;
 	}
 end:
+#ifndef NCSW_FREEBSD
 	if (device)
 		dev_put(device);
 	if (parent_device)
 		dev_put(parent_device);
+#endif
 
 	return rc;
 }

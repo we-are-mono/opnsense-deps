@@ -294,7 +294,7 @@ dpa_add_vlan_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 	iface->mtu = parent->mtu - 4;	/* VLAN overhead */
 
 	iface->vlan_info.parent = parent;
-	iface->vlan_info.vlan_id = vlan_id;
+	iface->vlan_info.vlan_id = htons(vlan_id);	/* match Linux: undo htons from control_vlan */
 	if (mac_addr)
 		memcpy(iface->vlan_info.mac_addr, mac_addr, 6);
 
@@ -621,12 +621,28 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 	memset(l2_info, 0, sizeof(*l2_info));
 	memset(l3_info, 0, sizeof(*l3_info));
 
-	/* Walk the interface hierarchy */
+	/*
+	 * Discover ingress logical interface types (VLAN, PPPoE, tunnel).
+	 * This populates vlan_present, num_ingress_vlan_hdrs, pppoe_present,
+	 * etc. which fill_actions() uses to decide STRIP opcodes.
+	 * Must be called before the egress walk below.
+	 */
+	if (rt_entry->input_itf != NULL) {
+		if (dpa_check_for_logical_iface_types(rt_entry->input_itf,
+		    rt_entry->underlying_input_itf, l2_info, l3_info)) {
+			DPA_ERROR("cdx: devman: tx_info: "
+			    "ingress iface type failed itf_id=%u\n",
+			    rt_entry->input_itf->index);
+			spin_unlock(&dpa_devlist_lock);
+			return (-1);
+		}
+	}
+
+	/* Walk the egress interface hierarchy */
 	cur = iface;
 	depth = 0;
 	while (cur != NULL && depth < 8) {
 		if (cur->if_flags & IF_TYPE_VLAN) {
-			l2_info->vlan_present = 1;
 			if (l2_info->num_egress_vlan_hdrs < DPA_CLS_HM_MAX_VLANs) {
 				l2_info->egress_vlan_hdrs[l2_info->num_egress_vlan_hdrs].tci =
 				    cur->vlan_info.vlan_id;
