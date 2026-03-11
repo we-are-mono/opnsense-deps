@@ -322,9 +322,10 @@ dpa_add_vlan_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 
 int
 dpa_add_lagg_if(char *name, struct _itf *itf, struct _itf *phys_itf,
-    uint8_t *mac_addr)
+    uint8_t *mac_addr, POnifDesc *member_onifs, int num_members)
 {
-	struct dpa_iface_info *iface, *parent;
+	struct dpa_iface_info *iface, *parent, *mem;
+	int i;
 
 	parent = devman_find_by_itfid(phys_itf->index);
 	if (parent == NULL) {
@@ -346,11 +347,74 @@ dpa_add_lagg_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 	if (mac_addr)
 		memcpy(iface->lagg_info.mac_addr, mac_addr, 6);
 
+	/* Store all member ports for multi-port hash entry matching */
+	iface->lagg_info.num_members = 0;
+	for (i = 0; i < num_members && i < LAGG_MAX_MEMBERS; i++) {
+		if (member_onifs[i] == NULL)
+			continue;
+		mem = devman_find_by_itfid(member_onifs[i]->itf->index);
+		if (mem != NULL) {
+			iface->lagg_info.members[iface->lagg_info.num_members] = mem;
+			iface->lagg_info.num_members++;
+		}
+	}
+
 	dpa_add_port_to_list(iface);
 
-	DPA_INFO("cdx: devman: registered LAGG %s — itf_id=%u "
-	    "parent=%s\n", name, iface->itf_id, (char *)parent->name);
+	return (0);
+}
 
+/* ================================================================
+ * dpa_get_lagg_member_ports — Get FMan port IDs for all LAGG members
+ *
+ * Given an interface index, if the interface is a LAGG (or has a
+ * LAGG ancestor), returns the FMan port info for all member ports.
+ * Used by cdx_ehash.c to install multi-port hash entries.
+ * ================================================================ */
+
+static struct dpa_iface_info *devman_find_eth_parent(struct dpa_iface_info *);
+
+int
+dpa_get_lagg_member_ports(uint32_t itf_index, uint32_t *port_ids,
+    int max, int *count)
+{
+	struct dpa_iface_info *iface, *eth_parent;
+	int i;
+
+	spin_lock(&dpa_devlist_lock);
+
+	iface = devman_find_by_itfid(itf_index);
+	if (iface == NULL) {
+		spin_unlock(&dpa_devlist_lock);
+		return (-1);
+	}
+
+	/* Walk up to find the LAGG in the hierarchy */
+	while (iface != NULL) {
+		if (iface->if_flags & IF_TYPE_LAGG)
+			break;
+		if (iface->if_flags & IF_TYPE_VLAN)
+			iface = iface->vlan_info.parent;
+		else
+			break;
+	}
+
+	if (iface == NULL || !(iface->if_flags & IF_TYPE_LAGG) ||
+	    iface->lagg_info.num_members < 2) {
+		spin_unlock(&dpa_devlist_lock);
+		return (-1);
+	}
+
+	*count = 0;
+	for (i = 0; i < iface->lagg_info.num_members && *count < max; i++) {
+		eth_parent = devman_find_eth_parent(iface->lagg_info.members[i]);
+		if (eth_parent != NULL) {
+			port_ids[*count] = eth_parent->eth_info.portid;
+			(*count)++;
+		}
+	}
+
+	spin_unlock(&dpa_devlist_lock);
 	return (0);
 }
 
@@ -1075,7 +1139,6 @@ dpa_release_interface(uint32_t itf_id)
 				free_iface_stats(p->if_flags, p);
 #endif
 			kfree(p);
-			DPA_INFO("cdx: devman: released itf_id=%u\n", itf_id);
 			return;
 		}
 	}

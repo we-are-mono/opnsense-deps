@@ -21,4 +21,7 @@ void cmm_lagg_fini(struct cmm_global *g);
 /* Called when interface flags change — register/deregister as needed */
 void cmm_lagg_notify(struct cmm_global *g, struct cmm_interface *itf);
 
+/* Check if a member port state change affects any LAGG — triggers failover */
+void cmm_lagg_member_check(struct cmm_global *g, struct cmm_interface *itf);
+
 #endif /* CMM_LAGG_H */

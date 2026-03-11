@@ -113,11 +113,15 @@ struct vlan_iface_info {
 	uint8_t br_mac_addr[ETH_ALEN]; 	/* Bridge mac address stored if interface is part of bridge group */
 };
 
+#define LAGG_MAX_MEMBERS 8
+
 //lagg (link aggregation) device information
 struct lagg_iface_info {
-	struct dpa_iface_info *parent;	/* first active member port */
+	struct dpa_iface_info *parent;	/* TX egress port */
+	struct dpa_iface_info *members[LAGG_MAX_MEMBERS]; /* all RX members */
+	uint8_t num_members;
 	uint8_t mac_addr[ETH_ALEN];
-	uint8_t pad[2];
+	uint8_t pad;
 };
 
 //pppoe device information

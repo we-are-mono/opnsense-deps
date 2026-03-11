@@ -90,7 +90,10 @@ found:
 		lagg_free(pEntry);
 		break;
 
-	case ACTION_REGISTER:
+	case ACTION_REGISTER: {
+		POnifDesc member_onifs[LAGG_MAX_MEMBERS];
+		int m;
+
 		if (get_onif_by_name(laggcmd.laggifname)) {
 			rc = ERR_LAGG_ENTRY_ALREADY_REGISTERED;
 			break;
@@ -112,6 +115,14 @@ found:
 			break;
 		}
 
+		/* Resolve all member ports */
+		for (m = 0; m < laggcmd.num_members && m < LAGG_MAX_MEMBERS; m++) {
+			member_onifs[m] = get_onif_by_name(laggcmd.member_ifnames[m]);
+			if (!member_onifs[m])
+				DPA_INFO("cdx: lagg: member '%s' not in onif DB\n",
+				    laggcmd.member_ifnames[m]);
+		}
+
 		/* Register in the interface manager */
 		if (!add_onif(laggcmd.laggifname, &pEntry->itf,
 		    phys_onif->itf, 0)) {
@@ -122,7 +133,8 @@ found:
 
 		/* Register in the DPA device manager */
 		if (dpa_add_lagg_if(laggcmd.laggifname, &pEntry->itf,
-		    phys_onif->itf, laggcmd.macaddr)) {
+		    phys_onif->itf, laggcmd.macaddr,
+		    member_onifs, laggcmd.num_members)) {
 			remove_onif_by_index(pEntry->itf.index);
 			lagg_free(pEntry);
 			rc = ERR_CREATION_FAILED;
@@ -131,6 +143,7 @@ found:
 
 		lagg_add(pEntry, laggcmd.laggifname);
 		break;
+	}
 
 	default:
 		return ERR_UNKNOWN_ACTION;

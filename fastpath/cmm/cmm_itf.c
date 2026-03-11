@@ -17,6 +17,7 @@
 #include <net/ethernet.h>
 #include <net/if_vlan_var.h>
 #include <net/if_lagg.h>
+#include <net/if_media.h>
 #include <net/route.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -193,35 +194,73 @@ itf_detect_vlan(struct cmm_interface *itf, int sd)
 
 /*
  * Probe an interface for LAGG membership using SIOCGLAGG.
- * If successful, records the first active member port name and
+ * If successful, records the first ACTIVE member port name and
  * its ifindex as parent_ifindex, and sets ITF_F_LAGG.
  */
+#define	LAGG_DETECT_MAX_PORTS	8
+
 static void
 itf_detect_lagg(struct cmm_interface *itf, int sd)
 {
 	struct lagg_reqall ra;
-	struct lagg_reqport rp;
+	struct lagg_reqport rp[LAGG_DETECT_MAX_PORTS];
+	int i, found;
 
 	memset(&ra, 0, sizeof(ra));
+	memset(rp, 0, sizeof(rp));
 	strlcpy(ra.ra_ifname, itf->ifname, sizeof(ra.ra_ifname));
 	ra.ra_size = sizeof(rp);
-	ra.ra_port = &rp;
+	ra.ra_port = rp;
 
 	if (ioctl(sd, SIOCGLAGG, &ra) < 0)
 		return;		/* Not a LAGG interface */
-	if (ra.ra_ports < 1)
-		return;		/* No member ports */
 
-	/* Use the first member port as the active port */
-	strlcpy(itf->lagg_active_port, rp.rp_portname,
-	    sizeof(itf->lagg_active_port));
-	itf->parent_ifindex = if_nametoindex(rp.rp_portname);
 	itf->itf_flags |= ITF_F_LAGG;
 
+	if (ra.ra_ports < 1) {
+		cmm_print(CMM_LOG_INFO,
+		    "itf: %s is LAGG (no member ports)", itf->ifname);
+		return;
+	}
+
+	/* Collect all member ports and find the first ACTIVE one */
+	found = (ra.ra_ports < LAGG_DETECT_MAX_PORTS) ?
+	    ra.ra_ports : LAGG_DETECT_MAX_PORTS;
+	itf->lagg_num_members = 0;
+	for (i = 0; i < found; i++) {
+		cmm_print(CMM_LOG_DEBUG,
+		    "itf: %s member[%d]=%s flags=0x%x",
+		    itf->ifname, i, rp[i].rp_portname, rp[i].rp_flags);
+
+		/* Record all member port names */
+		if (itf->lagg_num_members < 8)
+			strlcpy(itf->lagg_members[itf->lagg_num_members++],
+			    rp[i].rp_portname, IFNAMSIZ);
+
+		if ((rp[i].rp_flags & LAGG_PORT_ACTIVE) &&
+		    itf->lagg_active_port[0] == '\0') {
+			strlcpy(itf->lagg_active_port, rp[i].rp_portname,
+			    sizeof(itf->lagg_active_port));
+			itf->parent_ifindex =
+			    if_nametoindex(rp[i].rp_portname);
+		}
+	}
+
+	/* Fallback: if no ACTIVE flag found, use first port */
+	if (itf->lagg_active_port[0] == '\0' && found > 0) {
+		strlcpy(itf->lagg_active_port, rp[0].rp_portname,
+		    sizeof(itf->lagg_active_port));
+		itf->parent_ifindex = if_nametoindex(rp[0].rp_portname);
+		cmm_print(CMM_LOG_INFO,
+		    "itf: %s no ACTIVE member, using first: %s",
+		    itf->ifname, itf->lagg_active_port);
+	}
+
 	cmm_print(CMM_LOG_INFO,
-	    "itf: %s is LAGG (member=%s parent idx=%d)",
-	    itf->ifname, itf->lagg_active_port,
-	    itf->parent_ifindex);
+	    "itf: %s is LAGG (active=%s parent idx=%d, %d members)",
+	    itf->ifname,
+	    itf->lagg_active_port[0] ? itf->lagg_active_port : "(none)",
+	    itf->parent_ifindex, itf->lagg_num_members);
 }
 
 int
@@ -286,6 +325,23 @@ cmm_itf_init(void)
 					itf_detect_lagg(itf, sd);
 					itf_detect_vlan(itf, sd);
 					itf_detect_tunnel(itf, sd);
+
+					/* Init link_state from media status */
+					{
+						struct ifmediareq ifmr;
+
+						memset(&ifmr, 0, sizeof(ifmr));
+						strlcpy(ifmr.ifm_name,
+						    ifa->ifa_name,
+						    sizeof(ifmr.ifm_name));
+						if (ioctl(sd, SIOCGIFMEDIA,
+						    &ifmr) == 0)
+							itf->link_state =
+							    (ifmr.ifm_status &
+							    IFM_ACTIVE) ?
+							    LINK_STATE_UP :
+							    LINK_STATE_DOWN;
+					}
 					close(sd);
 				}
 				itf_detect_wifi(itf);
@@ -293,12 +349,12 @@ cmm_itf_init(void)
 
 			cmm_print(CMM_LOG_INFO,
 			    "itf: %s idx=%d mac=%02x:%02x:%02x:%02x:%02x:%02x "
-			    "mtu=%u flags=0x%x%s",
+			    "mtu=%u flags=0x%x ls=%d%s",
 			    itf->ifname, itf->ifindex,
 			    itf->macaddr[0], itf->macaddr[1],
 			    itf->macaddr[2], itf->macaddr[3],
 			    itf->macaddr[4], itf->macaddr[5],
-			    itf->mtu, itf->flags,
+			    itf->mtu, itf->flags, itf->link_state,
 			    (itf->itf_flags & ITF_F_WIFI) ? " WIFI" : "");
 			continue;
 		}
@@ -449,6 +505,28 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 		    (ifm->ifm_flags & IFF_UP) ? " UP" : " DOWN",
 		    (ifm->ifm_flags & IFF_RUNNING) ? " RUNNING" : "");
 		itf->flags = ifm->ifm_flags;
+	}
+
+	/*
+	 * Check link state changes (ifi_link_state, not IFF_RUNNING).
+	 * On FreeBSD, IFF_DRV_RUNNING stays set when a cable is unplugged;
+	 * only ifi_link_state transitions to LINK_STATE_DOWN.
+	 * If link state changed on a non-LAGG interface, it may be a
+	 * LAGG member port — trigger failover check on all LAGGs.
+	 */
+	if (itf->link_state != ifm->ifm_data.ifi_link_state) {
+		cmm_print(CMM_LOG_INFO,
+		    "itf: %s link_state %d -> %d",
+		    itf->ifname, itf->link_state,
+		    ifm->ifm_data.ifi_link_state);
+		itf->link_state = ifm->ifm_data.ifi_link_state;
+
+		/*
+		 * If link state changed on a non-LAGG interface, it may
+		 * be a LAGG member — trigger failover check on all LAGGs.
+		 */
+		if (!(itf->itf_flags & ITF_F_LAGG))
+			cmm_lagg_member_check(g, itf);
 	}
 
 	if (ifm->ifm_data.ifi_mtu != 0 &&

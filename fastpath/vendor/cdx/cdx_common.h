@@ -336,6 +336,16 @@ struct ins_entry_info {
 }; 
 
 
+/* Sibling hash entry for LAGG multi-port matching.
+ * Each sibling covers a different physical port's portid. */
+struct hw_ct_sibling {
+	struct hw_ct_sibling *next;
+	void *td;
+	void *handle;
+	uint16_t index;
+	uint32_t port_id;
+};
+
 /* hardware connection tracker info */
 struct hw_ct {
 	void *fm_ctx;
@@ -351,6 +361,7 @@ struct hw_ct {
 	uint64_t bytes;
 	uint64_t reset_pkts;
 	uint64_t reset_bytes;
+	struct hw_ct_sibling *siblings; /* extra port entries for LAGG */
 };
 
 //uncomment to include flow timestamps

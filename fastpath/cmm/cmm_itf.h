@@ -45,6 +45,7 @@ struct cmm_interface {
 	uint8_t			macaddr[ETHER_ADDR_LEN];
 	uint32_t		mtu;
 	uint32_t		flags;		/* IFF_UP, IFF_RUNNING, ... */
+	uint8_t			link_state;	/* LINK_STATE_UP/DOWN/UNKNOWN */
 	uint32_t		itf_flags;	/* ITF_F_* */
 	uint16_t		vlan_id;
 	struct list_head	addrs;		/* cmm_ifaddr list */
@@ -63,6 +64,8 @@ struct cmm_interface {
 	uint16_t		l2tp_sock_id;	/* cmm_socket ID */
 	/* LAGG state (valid when ITF_F_LAGG set) */
 	char			lagg_active_port[IFNAMSIZ];
+	char			lagg_members[8][IFNAMSIZ];
+	int			lagg_num_members;
 };
 
 /* Initialize interface table from getifaddrs */

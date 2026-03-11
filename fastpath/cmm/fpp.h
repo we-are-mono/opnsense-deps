@@ -1702,14 +1702,18 @@ typedef struct fpp_vlan_cmd {
 #define FPP_CMD_LAGG_ENTRY                              0x1701
 #define FPP_CMD_LAGG_RESET                              0x1702
 
+#define FPP_LAGG_MAX_MEMBERS	8
+
 /* LAGG command as understood by FPP */
 typedef struct fpp_lagg_cmd {
     u_int16_t   action;
     u_int16_t   pad;
     char        lagg_ifname[IFNAMSIZ];
-    char        lagg_phy_ifname[IFNAMSIZ];
+    char        lagg_phy_ifname[IFNAMSIZ];	/* TX parent */
     unsigned char macaddr[6];
-    unsigned char unused[2];
+    u_int8_t    num_members;
+    u_int8_t    pad2;
+    char        member_ifnames[FPP_LAGG_MAX_MEMBERS][IFNAMSIZ]; /* all RX members */
 } __attribute__((__packed__)) fpp_lagg_cmd_t;
 
 /*-------------------------------- MacVlan -----------------------------------*/

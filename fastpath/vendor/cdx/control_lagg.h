@@ -7,6 +7,8 @@
 #ifndef _CONTROL_LAGG_H_
 #define _CONTROL_LAGG_H_
 
+#include "portdefs.h"
+
 /* Internal LAGG entry used by the LAGG engine */
 typedef struct _tLaggEntry {
 	itf_t itf;
@@ -18,9 +20,11 @@ typedef struct _tLaggCommand {
 	U16 action;
 	U16 pad;
 	U8 laggifname[IF_NAME_SIZE];
-	U8 phyifname[IF_NAME_SIZE];
+	U8 phyifname[IF_NAME_SIZE];	/* TX parent */
 	U8 macaddr[6];
-	U8 unused[2];
+	U8 num_members;
+	U8 unused;
+	U8 member_ifnames[LAGG_MAX_MEMBERS][IF_NAME_SIZE]; /* all RX members */
 } LaggCommand, *PLaggCommand;
 
 int lagg_init(void);

@@ -55,6 +55,9 @@ void cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm);
 int cmm_route_send_fpp(struct cmm_global *g, struct cmm_route *rt,
     int action);
 
+/* Invalidate all routes using a specific output interface */
+void cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index);
+
 /* Allocate a new unique route ID */
 uint32_t cmm_route_alloc_id(struct cmm_global *g);
 

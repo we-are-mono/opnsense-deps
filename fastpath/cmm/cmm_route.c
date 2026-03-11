@@ -374,6 +374,39 @@ cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm)
 	cmm_socket_route_update(g);
 }
 
+/*
+ * Invalidate all cached routes whose output interface matches oif_index.
+ * Deregisters CDX routes and tears down offloaded connections.
+ * Used by LAGG failover to force re-offload through the new member port.
+ */
+void
+cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index)
+{
+	struct cmm_route *rt;
+	struct list_head *pos;
+	int i, count = 0;
+
+	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+		for (pos = list_first(&route_hash[i]);
+		    pos != &route_hash[i]; pos = list_next(pos)) {
+			rt = container_of(pos, struct cmm_route, entry);
+
+			if (rt->oif_index != oif_index &&
+			    rt->iif_index != oif_index)
+				continue;
+
+			cmm_route_invalidate_conns(g, rt);
+			cmm_fe_route_deregister(g, rt);
+			count++;
+		}
+	}
+
+	if (count > 0)
+		cmm_print(CMM_LOG_INFO,
+		    "route: invalidated %d route(s) on ifindex %d",
+		    count, oif_index);
+}
+
 int
 cmm_route_send_fpp(struct cmm_global *g, struct cmm_route *rt, int action)
 {

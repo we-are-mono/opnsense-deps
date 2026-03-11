@@ -495,16 +495,43 @@ static int fill_key_info(PCtEntry entry, uint8_t *keymem, uint32_t port_id)
 void hw_ct_get_active(struct hw_ct *ct)
 {
 	struct en_tbl_entry_stats stats;
+	struct hw_ct_sibling *sib;
+
 	memset(&stats, 0, sizeof(struct en_tbl_entry_stats));
 	ExternalHashTableEntryGetStatsAndTS(ct->handle, &stats);
 	ct->pkts = stats.pkts;
 	ct->bytes = stats.bytes;
 	ct->timestamp = stats.timestamp;
+
+	/* Aggregate statistics from LAGG sibling entries */
+	for (sib = ct->siblings; sib != NULL; sib = sib->next) {
+		struct en_tbl_entry_stats sib_stats;
+		memset(&sib_stats, 0, sizeof(sib_stats));
+		ExternalHashTableEntryGetStatsAndTS(sib->handle, &sib_stats);
+		ct->pkts += sib_stats.pkts;
+		ct->bytes += sib_stats.bytes;
+		if (sib_stats.timestamp > ct->timestamp)
+			ct->timestamp = sib_stats.timestamp;
+	}
+
 #ifdef CDX_DPA_DEBUG
-	DPA_INFO("%s::ct %p pkts %lu, bytes %lu, timestamp %x jiffies %x\n", 
+	DPA_INFO("%s::ct %p pkts %lu, bytes %lu, timestamp %x jiffies %x\n",
 		__FUNCTION__, ct, (unsigned long)ct->pkts, (unsigned long)ct->bytes, ct->timestamp,
 		JIFFIES32);
 #endif
+}
+
+static void hw_ct_free_siblings(struct hw_ct *ct)
+{
+	struct hw_ct_sibling *sib = ct->siblings;
+	while (sib) {
+		struct hw_ct_sibling *next = sib->next;
+		ExternalHashTableDeleteKey(sib->td, sib->index, sib->handle);
+		ExternalHashTableEntryFree(sib->handle);
+		kfree(sib);
+		sib = next;
+	}
+	ct->siblings = NULL;
 }
 
 /* delete classif entry from table */
@@ -517,7 +544,12 @@ int delete_entry_from_classif_table(PCtEntry entry)
 	}
 
 	CDX_DPA_DPRINT("\n");
-	if (ExternalHashTableDeleteKey(entry->ct->td, 
+
+	/* Remove LAGG sibling entries first */
+	if (entry->ct->siblings)
+		hw_ct_free_siblings(entry->ct);
+
+	if (ExternalHashTableDeleteKey(entry->ct->td,
 			entry->ct->index, entry->ct->handle)) {
                 DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
 		return FAILURE;
@@ -537,6 +569,11 @@ int delete_pppoe_relay_entry_from_classif_table(pPPPoE_Info entry)
 	ct = entry->hw_entry.ct;
 
 	CDX_DPA_DPRINT("\n");
+
+	/* Remove LAGG sibling entries first */
+	if (ct->siblings)
+		hw_ct_free_siblings(ct);
+
 	if(ExternalHashTableDeleteKey(ct->td,ct->index, ct->handle))
 	{
 		DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
@@ -554,8 +591,12 @@ int delete_pppoe_relay_entry_from_classif_table(pPPPoE_Info entry)
 int delete_l2br_entry_classif_table(struct L2Flow_entry *entry)
 {
 	struct hw_ct *ct = entry->ct;
-	
+
 	if (ct) {
+		/* Remove LAGG sibling entries first */
+		if (ct->siblings)
+			hw_ct_free_siblings(ct);
+
 		if (ct->handle) {
 			if (ct->td) {
 				if (ExternalHashTableDeleteKey(ct->td, ct->index, ct->handle)) {
@@ -1059,6 +1100,66 @@ int insert_entry_in_classif_table(PCtEntry entry)
 		goto err_ret;
 	}
 	entry->ct->index = (uint16_t)retval;
+	entry->ct->siblings = NULL;
+
+	/* Install sibling hash entries for other LAGG member ports.
+	 * Each sibling has the same forwarding actions but a different
+	 * portid in byte 0 of the key, so FMan matches the flow
+	 * regardless of which physical port the packet arrives on. */
+	{
+		uint32_t member_portids[LAGG_MAX_MEMBERS];
+		int n_members, m;
+
+		if (dpa_get_lagg_member_ports(entry->inPhyPortNum,
+		    member_portids, LAGG_MAX_MEMBERS, &n_members) == 0) {
+			for (m = 0; m < n_members; m++) {
+				struct en_exthash_tbl_entry *sib_entry;
+				struct hw_ct_sibling *sib;
+				void *sib_td;
+				int sib_retval;
+
+				if (member_portids[m] == info->port_id)
+					continue; /* skip primary */
+
+				sib_td = dpa_get_tdinfo(info->fm_idx,
+				    member_portids[m], info->tbl_type);
+				if (sib_td == NULL)
+					continue;
+
+				sib_entry = ExternalHashTableAllocEntry(sib_td);
+				if (sib_entry == NULL)
+					continue;
+
+				/* Copy entire entry, patch portid */
+				memcpy(sib_entry, tbl_entry,
+				    sizeof(*sib_entry));
+				sib_entry->hashentry.key[0] =
+				    member_portids[m];
+
+				sib_retval = ExternalHashTableAddKey(
+				    sib_td, key_size, sib_entry);
+				if (sib_retval == -1) {
+					ExternalHashTableEntryFree(sib_entry);
+					continue;
+				}
+
+				sib = kzalloc(sizeof(*sib), GFP_KERNEL);
+				if (sib == NULL) {
+					ExternalHashTableDeleteKey(sib_td,
+					    (uint16_t)sib_retval, sib_entry);
+					ExternalHashTableEntryFree(sib_entry);
+					continue;
+				}
+
+				sib->td = sib_td;
+				sib->handle = sib_entry;
+				sib->index = (uint16_t)sib_retval;
+				sib->port_id = member_portids[m];
+				sib->next = entry->ct->siblings;
+				entry->ct->siblings = sib;
+			}
+		}
+	}
 
 	kfree(info);
 	return SUCCESS;

@@ -210,6 +210,13 @@ pfn_insert_state(struct pf_kstate *s)
 	if (!pfn_open)
 		return;
 
+	/* Mark state as sloppy so PF skips strict TCP sequence validation.
+	 * When CDX offloads a flow, PF's seq tracking goes stale. During
+	 * failover, packets return to PF — sloppy mode prevents PF from
+	 * dropping them as "BAD state" due to out-of-window sequence.
+	 * PFSTATE_SLOPPY is 0x0002 (netpfil/pf/pf.h). */
+	s->state_flags |= 0x0002;
+
 	pfn_fill_event(&ev, PFN_EVENT_INSERT, s);
 	pfn_queue_event(&ev);
 }
