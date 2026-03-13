@@ -27,7 +27,7 @@ ported:
 | 7 | CLI daemon | `client_daemon.c` | 1,644 | (dispatcher) | Runtime CLI command interface | [x] |
 | 8 | Socket accel | `module_socket.c` | 1,886 | `FPP_CMD_IPV4/6_SOCK_*` | TCP socket-level acceleration | [x] |
 | 9 | RTP/voice | `module_rtp.c`, `voicebuf.c` | 1,810 | `FPP_CMD_RTP_*`, `_VOICE_BUFFER_*` | RTP/RTCP flow monitoring, voice buffers | |
-| 10 | PPPoE | `pppoe.c`, `module_relay.c` | 960 | `FPP_CMD_PPPOE_ENTRY`, `_RELAY_ENTRY` | PPPoE session management and relay | |
+| 10 | PPPoE | `pppoe.c`, `module_relay.c` | 960 | `FPP_CMD_PPPOE_ENTRY`, `_RELAY_ENTRY` | PPPoE session management and relay | [x] |
 | 11 | ICC | `module_icc.c` | 554 | `FPP_CMD_ICC_*` | Ingress congestion control | [x] |
 | 12 | Profiling | `module_prf.c` | 608 | `FPP_CMD_TRC_*` | FPP debug tracing and CPU profiling | [x] |
 | 13 | WiFi | `module_wifi.c` | 476 | `FPP_CMD_WIFI_VAP_*` | WiFi VAP management | |

@@ -32,6 +32,7 @@
 #include "cmm_tunnel.h"
 #include "cmm_bridge.h"
 #include "cmm_wifi.h"
+#include "cmm_pppoe.h"
 #include "cmm_lagg.h"
 
 static struct list_head itf_hash[ITF_HASH_SIZE];
@@ -345,6 +346,7 @@ cmm_itf_init(void)
 					close(sd);
 				}
 				itf_detect_wifi(itf);
+				itf_detect_pppoe(itf);
 			}
 
 			cmm_print(CMM_LOG_INFO,
@@ -486,6 +488,7 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 				close(sd);
 			}
 			itf_detect_wifi(itf);
+			itf_detect_pppoe(itf);
 		}
 
 		cmm_print(CMM_LOG_INFO,
@@ -537,11 +540,12 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 		itf->mtu = ifm->ifm_data.ifi_mtu;
 	}
 
-	/* Notify LAGG, VLAN, tunnel, WiFi, and bridge modules of flag changes */
+	/* Notify LAGG, VLAN, tunnel, WiFi, PPPoE, and bridge modules of flag changes */
 	cmm_lagg_notify(g, itf);
 	cmm_vlan_notify(g, itf);
 	cmm_tunnel_notify(g, itf);
 	cmm_wifi_notify(g, itf);
+	cmm_pppoe_notify(g, itf);
 
 	/* If this is a bridge or a potential bridge member, rescan */
 	if ((itf->itf_flags & ITF_F_BRIDGE) ||
@@ -779,6 +783,24 @@ cmm_itf_foreach_wifi(struct cmm_global *g, cmm_itf_wifi_fn fn)
 		    pos = list_next(pos)) {
 			itf = container_of(pos, struct cmm_interface, entry);
 			if (itf->itf_flags & ITF_F_WIFI)
+				fn(g, itf);
+		}
+	}
+}
+
+void
+cmm_itf_foreach_pppoe(struct cmm_global *g, cmm_itf_pppoe_fn fn)
+{
+	struct list_head *bucket, *pos;
+	struct cmm_interface *itf;
+	int i;
+
+	for (i = 0; i < ITF_HASH_SIZE; i++) {
+		bucket = &itf_hash[i];
+		for (pos = list_first(bucket); pos != bucket;
+		    pos = list_next(pos)) {
+			itf = container_of(pos, struct cmm_interface, entry);
+			if (itf->itf_flags & ITF_F_PPPOE)
 				fn(g, itf);
 		}
 	}

@@ -34,6 +34,8 @@ struct cmm_ifaddr {
 #define ITF_F_FPP_WIFI		(1 << 8)	/* WiFi VAP registered in CDX */
 #define ITF_F_LAGG		(1 << 9)	/* LAGG (link aggregation) */
 #define ITF_F_FPP_LAGG		(1 << 10)	/* LAGG registered in CDX */
+#define ITF_F_PPPOE		(1 << 11)	/* PPPoE session interface */
+#define ITF_F_FPP_PPPOE	(1 << 12)	/* PPPoE registered in CDX */
 
 struct cmm_route;
 
@@ -66,6 +68,10 @@ struct cmm_interface {
 	char			lagg_active_port[IFNAMSIZ];
 	char			lagg_members[8][IFNAMSIZ];
 	int			lagg_num_members;
+	/* PPPoE state (valid when ITF_F_PPPOE set) */
+	uint16_t		pppoe_session_id;
+	uint8_t			pppoe_peer_mac[ETHER_ADDR_LEN];
+	int			pppoe_parent_ifindex;
 };
 
 /* Initialize interface table from getifaddrs */
@@ -106,7 +112,14 @@ void cmm_itf_foreach_wifi(struct cmm_global *g, cmm_itf_wifi_fn fn);
 typedef int (*cmm_itf_lagg_fn)(struct cmm_global *, struct cmm_interface *);
 void cmm_itf_foreach_lagg(struct cmm_global *g, cmm_itf_lagg_fn fn);
 
+/* Iterate all PPPoE interfaces, calling fn for each with ITF_F_PPPOE set */
+typedef int (*cmm_itf_pppoe_fn)(struct cmm_global *, struct cmm_interface *);
+void cmm_itf_foreach_pppoe(struct cmm_global *g, cmm_itf_pppoe_fn fn);
+
 /* Probe interface for tunnel endpoints (gif/gre) */
 void itf_detect_tunnel(struct cmm_interface *itf, int sd);
+
+/* Probe interface for PPPoE session (via netgraph) */
+void itf_detect_pppoe(struct cmm_interface *itf);
 
 #endif /* CMM_ITF_H */

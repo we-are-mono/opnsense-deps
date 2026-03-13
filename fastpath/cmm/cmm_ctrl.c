@@ -113,6 +113,9 @@ static const uint16_t ctrl_whitelist[] = {
 	/* MACVLAN (virtual MAC interfaces) */
 	FPP_CMD_MACVLAN_ENTRY,
 	FPP_CMD_MACVLAN_RESET,
+	/* PPPoE */
+	FPP_CMD_PPPOE_ENTRY,
+	FPP_CMD_PPPOE_GET_IDLE,
 	/* L2TP */
 	FPP_CMD_L2TP_ITF_ADD,
 	FPP_CMD_L2TP_ITF_DEL,

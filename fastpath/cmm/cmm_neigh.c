@@ -26,6 +26,7 @@
 
 #include "cmm.h"
 #include "cmm_neigh.h"
+#include "cmm_itf.h"
 #include "cmm_rtsock.h"
 
 static struct list_head neigh_hash[NEIGH_HASH_SIZE];
@@ -76,6 +77,22 @@ neigh_resolve(struct cmm_global *g __unused, struct cmm_neigh *neigh)
 	char *buf, *next, *lim;
 	struct rt_msghdr *rtm;
 	struct cmm_rtsock_addrs addrs;
+
+	/*
+	 * PPPoE is point-to-point — no ARP.  The peer MAC is known
+	 * from PPPoE session negotiation, stored in the interface.
+	 */
+	{
+		struct cmm_interface *itf;
+
+		itf = cmm_itf_find_by_index(neigh->ifindex);
+		if (itf != NULL && (itf->itf_flags & ITF_F_PPPOE)) {
+			memcpy(neigh->macaddr, itf->pppoe_peer_mac,
+			    ETHER_ADDR_LEN);
+			neigh->state = NEIGH_RESOLVED;
+			return (0);
+		}
+	}
 
 	mib[0] = CTL_NET;
 	mib[1] = PF_ROUTE;

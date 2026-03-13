@@ -762,8 +762,13 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 		} else if (cur->if_flags & IF_TYPE_LAGG) {
 			cur = cur->lagg_info.parent;
 		} else if (cur->if_flags & IF_TYPE_PPPOE) {
-			l2_info->pppoe_present = 1;
+			l2_info->add_pppoe_hdr = 1;
 			l2_info->pppoe_sess_id = cur->pppoe_info.session_id;
+			memcpy(l2_info->ac_mac_addr,
+			    cur->pppoe_info.mac_addr, ETH_ALEN);
+#ifdef INCLUDE_PPPoE_IFSTATS
+			l2_info->pppoe_stats_offset = cur->txstats_index;
+#endif
 			cur = cur->pppoe_info.parent;
 		} else if (cur->if_flags & IF_TYPE_WLAN) {
 			/* WiFi VAP — TX goes to per-VAP FQ or OH default */
@@ -1974,6 +1979,10 @@ dpa_get_l2l3_info_by_itf_id(uint32_t itf_id,
 			    iface_info->pppoe_info.session_id;
 			memcpy(l2_info->ac_mac_addr,
 			    iface_info->pppoe_info.mac_addr, ETH_ALEN);
+#ifdef INCLUDE_PPPoE_IFSTATS
+			l2_info->pppoe_stats_offset =
+			    iface_info->txstats_index;
+#endif
 			iface_info = iface_info->pppoe_info.parent;
 			continue;
 		}

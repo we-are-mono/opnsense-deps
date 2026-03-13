@@ -17,6 +17,7 @@
 #include <net/pfvar.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <libutil.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@
 #include "cmm_socket.h"
 #include "cmm_bridge.h"
 #include "cmm_wifi.h"
+#include "cmm_pppoe.h"
 #include "cmm_ctrl.h"
 #include "pf_notify.h"
 #include "libfci.h"
@@ -73,18 +75,6 @@ sigterm_handler(int sig __unused)
 }
 
 static void
-write_pidfile(void)
-{
-	FILE *f;
-
-	f = fopen(CMM_PID_FILE, "w");
-	if (f != NULL) {
-		fprintf(f, "%d\n", getpid());
-		fclose(f);
-	}
-}
-
-static void
 usage(void)
 {
 	fprintf(stderr,
@@ -101,6 +91,7 @@ int
 main(int argc, char *argv[])
 {
 	struct cmm_global *g = &cmm_g;
+	struct pidfh *pfh;
 	struct kevent kev[16];
 	const char *deny_conf = NULL;
 	int ch, nev;
@@ -147,14 +138,33 @@ main(int argc, char *argv[])
 	cmm_print(CMM_LOG_INFO, "CMM starting (debug=%d poll=%dms)",
 	    g->debug_level, g->poll_ms);
 
+	/* Acquire PID file lock — prevents duplicate instances */
+	{
+		pid_t otherpid;
+
+		pfh = pidfile_open(CMM_PID_FILE, 0600, &otherpid);
+		if (pfh == NULL) {
+			if (errno == EEXIST) {
+				cmm_print(CMM_LOG_ERR,
+				    "already running (pid %jd)",
+				    (intmax_t)otherpid);
+				exit(1);
+			}
+			cmm_print(CMM_LOG_ERR, "pidfile_open: %s",
+			    strerror(errno));
+			exit(1);
+		}
+	}
+
 	/* Daemonize unless -f */
 	if (!g->foreground) {
 		if (daemon(0, 1) < 0) {
 			cmm_print(CMM_LOG_ERR, "daemon: %s", strerror(errno));
+			pidfile_remove(pfh);
 			exit(1);
 		}
 	}
-	write_pidfile();
+	pidfile_write(pfh);
 
 	/* Install signal handlers */
 	{
@@ -262,6 +272,7 @@ main(int argc, char *argv[])
 	cmm_socket_init();
 	cmm_bridge_init(g);
 	cmm_wifi_init(g);
+	cmm_pppoe_init(g);
 
 	if (cmm_ipsec_init() < 0)
 		goto out;
@@ -470,7 +481,7 @@ out:
 	if (g->fci_handle != NULL)
 		fci_close(g->fci_handle);
 
-	unlink(CMM_PID_FILE);
+	pidfile_remove(pfh);
 	cmm_print(CMM_LOG_INFO, "exited");
 
 	return (0);
