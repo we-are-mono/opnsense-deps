@@ -10,7 +10,8 @@
 
 #include "cmm.h"
 
-#define NEIGH_HASH_SIZE		256
+#define NEIGH_HASH_SIZE		2048
+#define NEIGH_HASH_TOTAL	(2 * NEIGH_HASH_SIZE)	/* IPv4 + IPv6 halves */
 
 /* Neighbor states */
 #define NEIGH_INCOMPLETE	0

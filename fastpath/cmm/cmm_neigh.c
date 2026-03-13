@@ -29,7 +29,7 @@
 #include "cmm_itf.h"
 #include "cmm_rtsock.h"
 
-static struct list_head neigh_hash[NEIGH_HASH_SIZE];
+static struct list_head neigh_hash[NEIGH_HASH_TOTAL];
 
 static inline unsigned int
 neigh_hash_index(sa_family_t af, const void *ip)
@@ -37,7 +37,7 @@ neigh_hash_index(sa_family_t af, const void *ip)
 	if (af == AF_INET)
 		return (jhash(ip, 4, 0) % NEIGH_HASH_SIZE);
 	else
-		return (jhash(ip, 16, 0) % NEIGH_HASH_SIZE);
+		return (jhash(ip, 16, 0) % NEIGH_HASH_SIZE) + NEIGH_HASH_SIZE;
 }
 
 static struct cmm_neigh *
@@ -181,7 +181,7 @@ cmm_neigh_init(void)
 {
 	int i;
 
-	for (i = 0; i < NEIGH_HASH_SIZE; i++)
+	for (i = 0; i < NEIGH_HASH_TOTAL; i++)
 		list_head_init(&neigh_hash[i]);
 	return (0);
 }
@@ -193,7 +193,7 @@ cmm_neigh_fini(void)
 	struct list_head *pos, *tmp;
 	int i;
 
-	for (i = 0; i < NEIGH_HASH_SIZE; i++) {
+	for (i = 0; i < NEIGH_HASH_TOTAL; i++) {
 		pos = list_first(&neigh_hash[i]);
 		while (pos != &neigh_hash[i]) {
 			tmp = list_next(pos);
@@ -289,7 +289,7 @@ cmm_neigh_flush_ifindex(int ifindex)
 	struct list_head *pos;
 	int i;
 
-	for (i = 0; i < NEIGH_HASH_SIZE; i++) {
+	for (i = 0; i < NEIGH_HASH_TOTAL; i++) {
 		for (pos = list_first(&neigh_hash[i]);
 		    pos != &neigh_hash[i]; pos = list_next(pos)) {
 			neigh = container_of(pos, struct cmm_neigh, entry);
@@ -306,7 +306,7 @@ cmm_neigh_flush_all(void)
 	struct list_head *pos;
 	int i;
 
-	for (i = 0; i < NEIGH_HASH_SIZE; i++) {
+	for (i = 0; i < NEIGH_HASH_TOTAL; i++) {
 		for (pos = list_first(&neigh_hash[i]);
 		    pos != &neigh_hash[i]; pos = list_next(pos)) {
 			neigh = container_of(pos, struct cmm_neigh, entry);
