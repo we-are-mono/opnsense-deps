@@ -41,8 +41,7 @@ cmm_prestart()
 cmm_start()
 {
 	echo "Starting ${name}."
-	/usr/sbin/daemon -p ${pidfile} -t ${name} \
-	    /usr/local/sbin/cmm -f ${cmm_flags}
+	/usr/local/sbin/cmm ${cmm_flags}
 }
 
 cmm_stop()

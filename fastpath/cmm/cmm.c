@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/user.h>
 #include <net/pfvar.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -141,17 +142,44 @@ main(int argc, char *argv[])
 	/* Acquire PID file lock — prevents duplicate instances */
 	{
 		pid_t otherpid;
+		int stale;
 
 		pfh = pidfile_open(CMM_PID_FILE, 0600, &otherpid);
+		if (pfh == NULL && errno == EEXIST) {
+			/*
+			 * Check if the PID is actually CMM.  The PID
+			 * could be reused by an unrelated process after
+			 * a crash.
+			 */
+			stale = 0;
+			if (kill(otherpid, 0) != 0 && errno == ESRCH) {
+				stale = 1;
+			} else {
+				struct kinfo_proc *kp;
+
+				kp = kinfo_getproc(otherpid);
+				if (kp == NULL) {
+					stale = 1;
+				} else {
+					if (strcmp(kp->ki_comm, "cmm") != 0)
+						stale = 1;
+					free(kp);
+				}
+			}
+			if (stale) {
+				unlink(CMM_PID_FILE);
+				pfh = pidfile_open(CMM_PID_FILE,
+				    0600, &otherpid);
+			}
+		}
 		if (pfh == NULL) {
-			if (errno == EEXIST) {
+			if (errno == EEXIST)
 				cmm_print(CMM_LOG_ERR,
 				    "already running (pid %jd)",
 				    (intmax_t)otherpid);
-				exit(1);
-			}
-			cmm_print(CMM_LOG_ERR, "pidfile_open: %s",
-			    strerror(errno));
+			else
+				cmm_print(CMM_LOG_ERR, "pidfile_open: %s",
+				    strerror(errno));
 			exit(1);
 		}
 	}
