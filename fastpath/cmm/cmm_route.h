@@ -13,7 +13,8 @@
 #include "cmm.h"
 #include "cmm_neigh.h"
 
-#define ROUTE_HASH_SIZE		256
+#define ROUTE_HASH_SIZE		2048
+#define ROUTE_HASH_TOTAL	(2 * ROUTE_HASH_SIZE)	/* IPv4 + IPv6 halves */
 
 struct cmm_route {
 	struct list_head	entry;		/* hash bucket chain */

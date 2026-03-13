@@ -27,7 +27,7 @@
 #include "cmm_tunnel.h"
 #include "cmm_socket.h"
 
-static struct list_head route_hash[ROUTE_HASH_SIZE];
+static struct list_head route_hash[ROUTE_HASH_TOTAL];
 
 static inline unsigned int
 route_hash_index(sa_family_t af, const void *dst)
@@ -35,7 +35,7 @@ route_hash_index(sa_family_t af, const void *dst)
 	if (af == AF_INET)
 		return (jhash(dst, 4, 0) % ROUTE_HASH_SIZE);
 	else
-		return (jhash(dst, 16, 0) % ROUTE_HASH_SIZE);
+		return (jhash(dst, 16, 0) % ROUTE_HASH_SIZE) + ROUTE_HASH_SIZE;
 }
 
 static struct cmm_route *
@@ -157,7 +157,7 @@ cmm_route_init(void)
 {
 	int i;
 
-	for (i = 0; i < ROUTE_HASH_SIZE; i++)
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++)
 		list_head_init(&route_hash[i]);
 	return (0);
 }
@@ -169,7 +169,7 @@ cmm_route_fini(void)
 	struct list_head *pos, *tmp;
 	int i;
 
-	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
 		pos = list_first(&route_hash[i]);
 		while (pos != &route_hash[i]) {
 			tmp = list_next(pos);
@@ -188,7 +188,7 @@ route_id_in_use(uint32_t id)
 {
 	int i;
 
-	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
 		struct list_head *pos;
 
 		for (pos = list_first(&route_hash[i]);
@@ -296,7 +296,7 @@ cmm_route_gc(struct cmm_global *g)
 	struct list_head *pos, *tmp;
 	int i;
 
-	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
 		pos = list_first(&route_hash[i]);
 		while (pos != &route_hash[i]) {
 			tmp = list_next(pos);
@@ -337,7 +337,7 @@ cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
 	 * stale CDX route and all connections using it.  They will
 	 * re-offload on the next poll cycle with the new path.
 	 */
-	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
 		for (pos = list_first(&route_hash[i]);
 		    pos != &route_hash[i]; pos = list_next(pos)) {
 			rt = container_of(pos, struct cmm_route, entry);
@@ -387,7 +387,7 @@ cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index)
 	struct list_head *pos;
 	int i, count = 0;
 
-	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
 		for (pos = list_first(&route_hash[i]);
 		    pos != &route_hash[i]; pos = list_next(pos)) {
 			rt = container_of(pos, struct cmm_route, entry);
@@ -422,7 +422,7 @@ cmm_route_flush_all_local(void)
 	struct list_head *pos, *tmp;
 	int i;
 
-	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
 		pos = list_first(&route_hash[i]);
 		while (pos != &route_hash[i]) {
 			tmp = list_next(pos);
