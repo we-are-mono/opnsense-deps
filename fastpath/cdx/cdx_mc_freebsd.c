@@ -1048,9 +1048,71 @@ MC6_Command_Handler(PMC6Command cmd)
 	return (sizeof(unsigned short));
 }
 
+/*
+ * mc4_reset / mc6_reset — remove all multicast groups from CDX.
+ * Unlike mc4_exit/mc6_exit (module unload), these properly deregister
+ * each group from the classification table while the module is running.
+ */
+static void
+mc4_reset(void)
+{
+	struct mcast_group_info *grp;
+	struct list_head *pos, *tmp;
+	int ii;
+
+	for (ii = 0; ii < MC4_NUM_HASH_ENTRIES; ii++) {
+		spin_lock(&mc4_spinlocks[ii]);
+		list_for_each_safe(pos, tmp, &mc4_grp_list[ii]) {
+			grp = list_entry(pos, struct mcast_group_info, list);
+			delete_entry_from_classif_table(grp->pCtEntry);
+			cdx_free_exthash_mcast_members(grp);
+			list_del(pos);
+			if (grp->pCtEntry != NULL) {
+				if (grp->pCtEntry->pRtEntry != NULL)
+					kfree(grp->pCtEntry->pRtEntry);
+				kfree(grp->pCtEntry);
+			}
+			kfree(grp);
+		}
+		spin_unlock(&mc4_spinlocks[ii]);
+	}
+}
+
+static void
+mc6_reset(void)
+{
+	struct mcast_group_info *grp;
+	struct list_head *pos, *tmp;
+	int ii;
+
+	for (ii = 0; ii < MC6_NUM_HASH_ENTRIES; ii++) {
+		spin_lock(&mc6_spinlocks[ii]);
+		list_for_each_safe(pos, tmp, &mc6_grp_list[ii]) {
+			grp = list_entry(pos, struct mcast_group_info, list);
+			delete_entry_from_classif_table(grp->pCtEntry);
+			cdx_free_exthash_mcast_members(grp);
+			list_del(pos);
+			if (grp->pCtEntry != NULL) {
+				if (grp->pCtEntry->pRtEntry != NULL)
+					kfree(grp->pCtEntry->pRtEntry);
+				kfree(grp->pCtEntry);
+			}
+			kfree(grp);
+		}
+		spin_unlock(&mc6_spinlocks[ii]);
+	}
+}
+
 U16
 M_mc4_cmdproc(U16 cmd_code, U16 cmd_len, U16 *pcmd)
 {
+
+	/* Reset has no payload — handle before size check */
+	if (cmd_code == CMD_MC4_RESET) {
+		mc4_reset();
+		*pcmd = NO_ERR;
+		return (sizeof(unsigned short));
+	}
 
 	if (cmd_len > sizeof(MC4Command) || cmd_len < MC4_MIN_COMMAND_SIZE) {
 		*pcmd = ERR_WRONG_COMMAND_SIZE;
@@ -1070,6 +1132,13 @@ M_mc4_cmdproc(U16 cmd_code, U16 cmd_len, U16 *pcmd)
 U16
 M_mc6_cmdproc(U16 cmd_code, U16 cmd_len, U16 *pcmd)
 {
+
+	/* Reset has no payload — handle before size check */
+	if (cmd_code == CMD_MC6_RESET) {
+		mc6_reset();
+		*pcmd = NO_ERR;
+		return (sizeof(unsigned short));
+	}
 
 	if (cmd_len > sizeof(MC6Command) || cmd_len < MC6_MIN_COMMAND_SIZE) {
 		*pcmd = ERR_WRONG_COMMAND_SIZE;

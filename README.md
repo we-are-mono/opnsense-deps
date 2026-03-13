@@ -178,7 +178,7 @@ cross-compilation sysroot created by `make kernel`.
 > needed when building without `make image`.
 
 ```
-fetch -o /tmp/libxml2.pkg 'https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/libxml2-2.15.1_1.pkg'
+fetch -o /tmp/libxml2.pkg 'https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/libxml2-2.15.2.pkg'
 mkdir -p /tmp/libxml2-extract && cd /tmp/libxml2-extract && tar xf /tmp/libxml2.pkg
 
 SYSROOT=/usr/obj/build/opnsense-src/arm64.aarch64/tmp
@@ -196,7 +196,7 @@ make -C /build/opnsense-deps image LIBXML2_PKG=libxml2-2.16.0.pkg
 ### 6. Build custom modules and tools (everything in this repo)
 
 ```
-make -C /build/opnsense-deps -j24 all
+sudo make -C /build/opnsense-deps -j24 all
 ```
 
 The first build automatically clones NXP vendor repositories (mwifiex driver
@@ -261,10 +261,10 @@ source. To iterate on one:
 
 ```bash
 # Rebuild just caam
-make -C /build/opnsense-deps build-caam
+sudo make -C /build/opnsense-deps build-caam
 
 # Or rebuild all modules
-make -C /build/opnsense-deps -j24 modules
+sudo make -C /build/opnsense-deps -j24 modules
 ```
 
 Output `.ko` files land in the driver directory and are collected into `dist/`

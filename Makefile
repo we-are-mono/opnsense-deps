@@ -53,7 +53,7 @@ DISTDIR?=	${OPSDIR}/dist
 # libxml2 aarch64 package for cross-compilation sysroot (fmc links against it).
 # pkg.FreeBSD.org blocks directory listings, so we fetch by exact filename.
 # Update this when the FreeBSD ports tree bumps libxml2.
-LIBXML2_PKG?=	libxml2-2.15.1_1.pkg
+LIBXML2_PKG?=	libxml2-2.15.2.pkg
 LIBXML2_URL=	https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/${LIBXML2_PKG}
 
 # Package version: derived from git tags (e.g., tag "26.1.2" + 3 commits = "26.1.2_3")
@@ -292,6 +292,7 @@ package: clean dist
 _NCPU!=		sysctl -n hw.ncpu 2>/dev/null || echo 4
 
 image:
+	@echo "NOTE: run as root (sudo make image)"
 	@rm -rf ${DISTDIR}/*
 	@touch ${DISTDIR}/.keep
 	@echo "==> Step 1: Checking repositories"
@@ -300,10 +301,10 @@ image:
 	@cp -n ${OPSDIR}/config/GATEWAY.conf ${BUILDTOOL}/device/ 2>/dev/null || true
 	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && git pull
 	@echo "==> Step 2: Building kernel (clean)"
-	sudo rm -f ${SETSDIR}/kernel-*-GATEWAY.txz
-	sudo chflags -R noschg /usr/obj${SRCDIR}/arm64.aarch64 2>/dev/null || true
-	sudo rm -rf /usr/obj${SRCDIR}/arm64.aarch64
-	sudo ${MAKE} -C ${BUILDTOOL} kernel \
+	rm -f ${SETSDIR}/kernel-*-GATEWAY.txz
+	chflags -R noschg /usr/obj${SRCDIR}/arm64.aarch64 2>/dev/null || true
+	rm -rf /usr/obj${SRCDIR}/arm64.aarch64
+	${MAKE} -C ${BUILDTOOL} kernel \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
 		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
 	@echo "==> Step 2a: Populating sysroot from base set"
@@ -312,7 +313,7 @@ image:
 		echo "ERROR: no base set found in ${SETSDIR}"; exit 1; \
 	fi; \
 	echo "    extracting headers and libraries from $$(basename $$_base)"; \
-	sudo tar xf "$$_base" -C ${SYSROOT} --no-fflags \
+	tar xf "$$_base" -C ${SYSROOT} --no-fflags \
 		--include='./usr/include/*' \
 		--include='./usr/lib/*.a' \
 		--include='./usr/lib/*.so' \
@@ -320,15 +321,15 @@ image:
 		--include='./lib/*.so*'
 	@echo "==> Step 2b: Installing libxml2 into sysroot"
 	@if [ ! -f ${SYSROOT}/usr/local/lib/libxml2.so ]; then \
-		sudo rm -f /tmp/libxml2.pkg; \
+		rm -f /tmp/libxml2.pkg; \
 		fetch -qo /tmp/libxml2.pkg '${LIBXML2_URL}'; \
 		rm -rf /tmp/libxml2-extract; \
 		mkdir -p /tmp/libxml2-extract; \
 		tar xf /tmp/libxml2.pkg -C /tmp/libxml2-extract; \
-		sudo mkdir -p ${SYSROOT}/usr/local/include ${SYSROOT}/usr/local/lib; \
-		sudo cp -r /tmp/libxml2-extract/usr/local/include/libxml2 \
+		mkdir -p ${SYSROOT}/usr/local/include ${SYSROOT}/usr/local/lib; \
+		cp -r /tmp/libxml2-extract/usr/local/include/libxml2 \
 			${SYSROOT}/usr/local/include/; \
-		sudo cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* \
+		cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* \
 			${SYSROOT}/usr/local/lib/; \
 		rm -rf /tmp/libxml2-extract /tmp/libxml2.pkg; \
 		echo "    libxml2 installed into sysroot"; \
@@ -340,14 +341,14 @@ image:
 	@echo "==> Step 4: Building package"
 	${MAKE} -C ${OPSDIR} package
 	@echo "==> Step 5: Assembling image"
-	sudo rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
+	rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
 		${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz
-	sudo ${MAKE} -C ${BUILDTOOL} arm-5G \
+	${MAKE} -C ${BUILDTOOL} arm-5G \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
 		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
 	@echo "==> Step 6: Compressing and copying to dist/"
 	@mkdir -p ${DISTDIR}
-	sudo gzip -k ${IMAGESDIR}/OPNsense-*-GATEWAY.img
+	gzip -k ${IMAGESDIR}/OPNsense-*-GATEWAY.img
 	cp ${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz ${DISTDIR}/
 	@echo "==> Image ready:"
 	@ls -lh ${DISTDIR}/OPNsense-*-GATEWAY.img.gz

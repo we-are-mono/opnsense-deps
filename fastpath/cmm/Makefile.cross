@@ -30,6 +30,8 @@ PROG=		cmm
 
 CFLAGS=		-O2 -pipe -Wall -Wextra -Wno-unused-parameter
 CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
+KSRCDIR?=	/build/opnsense-src
+CFLAGS+=	-isystem ${KSRCDIR}/sys
 CFLAGS+=	-I${FCI_DIR} -I${FCI_HDR} -I${SRCDIR}/include -I${CMM_DIR} \
 		-I${SRCDIR}/auto_bridge -I${SRCDIR}/pf_notify
 CFLAGS+=	-DLS1043
