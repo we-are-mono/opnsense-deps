@@ -300,6 +300,22 @@ cmm_neigh_flush_ifindex(int ifindex)
 }
 
 void
+cmm_neigh_flush_all(void)
+{
+	struct cmm_neigh *neigh;
+	struct list_head *pos;
+	int i;
+
+	for (i = 0; i < NEIGH_HASH_SIZE; i++) {
+		for (pos = list_first(&neigh_hash[i]);
+		    pos != &neigh_hash[i]; pos = list_next(pos)) {
+			neigh = container_of(pos, struct cmm_neigh, entry);
+			neigh->state = NEIGH_STALE;
+		}
+	}
+}
+
+void
 cmm_neigh_invalidate(sa_family_t af, const void *ip)
 {
 	struct cmm_neigh *neigh;

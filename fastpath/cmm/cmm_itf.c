@@ -28,6 +28,7 @@
 
 #include "cmm.h"
 #include "cmm_itf.h"
+#include "cmm_conn.h"
 #include "cmm_vlan.h"
 #include "cmm_tunnel.h"
 #include "cmm_bridge.h"
@@ -598,6 +599,9 @@ cmm_itf_handle_newaddr(struct cmm_global *g, void *msg, int msglen)
 		    (1 + ((sa->sa_len - 1) | (sizeof(long) - 1))) :
 		    sizeof(long));
 	}
+
+	/* Address change signals interface reassignment — full reset */
+	cmm_reset_offload_state(g);
 }
 
 void
@@ -609,7 +613,6 @@ cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen)
 	char *cp;
 	int i;
 
-	(void)g;
 	(void)msglen;
 
 	itf = cmm_itf_find_by_index(ifam->ifam_index);
@@ -663,6 +666,9 @@ cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen)
 		    (1 + ((sa->sa_len - 1) | (sizeof(long) - 1))) :
 		    sizeof(long));
 	}
+
+	/* Address removal signals interface reassignment — full reset */
+	cmm_reset_offload_state(g);
 }
 
 int

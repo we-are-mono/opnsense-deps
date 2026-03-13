@@ -61,4 +61,7 @@ void cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index);
 /* Allocate a new unique route ID */
 uint32_t cmm_route_alloc_id(struct cmm_global *g);
 
+/* Deregister and free all cached routes (full reset) */
+void cmm_route_flush_all(struct cmm_global *g);
+
 #endif /* CMM_ROUTE_H */

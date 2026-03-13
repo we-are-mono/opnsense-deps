@@ -459,6 +459,58 @@ cmm_route_invalidate_conns(struct cmm_global *g, struct cmm_route *rt)
 	}
 }
 
+/*
+ * Full offload state reset: deregister all connections from CDX,
+ * clear their route pointers, flush all cached routes and neighbors.
+ * Connections remain in the hash table — they will re-resolve routes
+ * and re-offload on the next poll/event cycle.
+ *
+ * Called on interface reassignment (RTM_NEWADDR / RTM_DELADDR) where
+ * the routing topology has fundamentally changed.
+ */
+void
+cmm_reset_offload_state(struct cmm_global *g)
+{
+	struct cmm_conn *conn;
+	struct list_head *pos;
+	int i;
+
+	cmm_print(CMM_LOG_INFO,
+	    "conn: full offload reset (interface reassignment)");
+
+	/* Deregister all offloaded connections and clear route refs */
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn, hash_entry);
+
+			if (conn->flags & CONN_F_OFFLOADED) {
+				if (conn->af == AF_INET)
+					cmm_fe_ct4_deregister(g, conn);
+				else
+					cmm_fe_ct6_deregister(g, conn);
+				conn->flags &= ~CONN_F_OFFLOADED;
+			}
+
+			if (conn->orig_route != NULL) {
+				cmm_route_put(conn->orig_route);
+				conn->orig_route = NULL;
+			}
+			if (conn->rep_route != NULL) {
+				cmm_route_put(conn->rep_route);
+				conn->rep_route = NULL;
+			}
+		}
+	}
+	conn_offloaded = 0;
+
+	/* Flush all cached routes (deregister from CDX + free) */
+	cmm_route_flush_all(g);
+
+	/* Mark all neighbors stale (forces re-resolution) */
+	cmm_neigh_flush_all();
+}
+
 /* --- Push-based event handling ------------------------------------ */
 
 /*

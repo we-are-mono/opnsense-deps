@@ -96,4 +96,11 @@ void cmm_conn_stats_sync(struct cmm_global *g);
 int cmm_conn_fci_event(unsigned short fcode, unsigned short len,
     unsigned short *payload);
 
+/*
+ * Full offload state reset: deregister all connections from CDX,
+ * flush routes and neighbors.  Connections stay in the table and
+ * re-offload on the next poll cycle.  Used on interface reassignment.
+ */
+void cmm_reset_offload_state(struct cmm_global *g);
+
 #endif /* CMM_CONN_H */

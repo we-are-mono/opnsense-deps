@@ -407,6 +407,33 @@ cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index)
 		    count, oif_index);
 }
 
+void
+cmm_route_flush_all(struct cmm_global *g)
+{
+	struct cmm_route *rt;
+	struct list_head *pos, *tmp;
+	int i;
+
+	for (i = 0; i < ROUTE_HASH_SIZE; i++) {
+		pos = list_first(&route_hash[i]);
+		while (pos != &route_hash[i]) {
+			tmp = list_next(pos);
+			rt = container_of(pos, struct cmm_route, entry);
+			if (rt->fpp_programmed)
+				cmm_fe_route_deregister(g, rt);
+			if (rt->neigh != NULL) {
+				cmm_neigh_put(rt->neigh);
+				rt->neigh = NULL;
+			}
+			if (rt->refcount == 0) {
+				list_del(&rt->entry);
+				free(rt);
+			}
+			pos = tmp;
+		}
+	}
+}
+
 int
 cmm_route_send_fpp(struct cmm_global *g, struct cmm_route *rt, int action)
 {

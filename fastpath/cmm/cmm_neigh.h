@@ -49,4 +49,7 @@ void cmm_neigh_flush_ifindex(int ifindex);
 /* Invalidate a specific neighbor (e.g. on ARP change) */
 void cmm_neigh_invalidate(sa_family_t af, const void *ip);
 
+/* Mark all neighbors as stale (full reset) */
+void cmm_neigh_flush_all(void);
+
 #endif /* CMM_NEIGH_H */
