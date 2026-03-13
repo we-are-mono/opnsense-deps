@@ -29,6 +29,21 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 
 /* ================================================================
+ * Locking model
+ *
+ * All public entry points (M_mc4_cmdproc, M_mc6_cmdproc) are called
+ * from cdx_send_command() which holds ctrl->mutex.  This serializes
+ * all multicast command dispatch — create, update, delete, and query
+ * never run concurrently.  Functions like GetMcastGrp(), GetMcastGrpId(),
+ * GetNewMcastGrpId(), and the query snapshot state are therefore safe
+ * without additional locking.
+ *
+ * The per-bucket spinlocks (mc4_spinlocks[], mc6_spinlocks[]) protect
+ * against the FMan packet path reading the member chain while a command
+ * modifies it.  They are NOT needed for inter-command serialization.
+ * ================================================================ */
+
+/* ================================================================
  * Module-scope state
  * ================================================================ */
 
@@ -365,6 +380,12 @@ cdx_add_mcast_table_entry(void *mcast_cmd,
 			    pMcastGrpInfo->members[ii].tbl_entry);
 			break;
 		}
+	}
+
+	if (phyaddr == 0) {
+		DPA_ERROR("%s: no valid member entry found\n", __func__);
+		retval = -EIO;
+		goto err_ret;
 	}
 
 	retval = insert_mcast_entry_in_classif_table(pCtEntry,
@@ -745,6 +766,17 @@ cdx_update_mcast_group(void *mcast_cmd, int bIsIPv6)
 	}
 
 err_ret:
+	/*
+	 * Members committed in previous loop iterations remain in the
+	 * group.  Rolling back would require reverse-unlinking each
+	 * entry from the MURAM replicate chain (HW-visible state) —
+	 * too complex and risky.  The group is in a consistent state
+	 * with a partial member set; the caller can issue REMOVE to
+	 * clean up.  This matches Linux vendor behavior.
+	 */
+	if (iRet != 0 && ii > 0)
+		DPA_ERROR("%s: partial update — %d of %u members added "
+		    "before failure\n", __func__, ii, uiNoOfListeners);
 	return (iRet);
 }
 
@@ -1392,9 +1424,42 @@ mc6_init(void)
 	return (0);
 }
 
+/*
+ * mc_free_group — Free a multicast group's heap allocations.
+ *
+ * Called during module unload AFTER cdx_dpa_bridge_destroy() has
+ * already deleted PCD and all hash tables (ExternalHashTableDelete
+ * frees DDR bucket entries).  So we must NOT call
+ * ExternalHashTableEntryFree or delete_entry_from_classif_table
+ * here — those tbl_entry pointers are dangling.  Only free the
+ * heap-side metadata: pCtEntry, pRtEntry, and the group itself.
+ */
+static void
+mc_free_group(struct mcast_group_info *grp)
+{
+
+	if (grp->pCtEntry != NULL) {
+		if (grp->pCtEntry->pRtEntry != NULL)
+			kfree(grp->pCtEntry->pRtEntry);
+		kfree(grp->pCtEntry);
+	}
+	kfree(grp);
+}
+
 void
 mc4_exit(void)
 {
+	int ii;
+	struct mcast_group_info *grp;
+	struct list_head *pos, *tmp;
+
+	for (ii = 0; ii < MC4_NUM_HASH_ENTRIES; ii++) {
+		list_for_each_safe(pos, tmp, &mc4_grp_list[ii]) {
+			grp = list_entry(pos, struct mcast_group_info, list);
+			list_del(pos);
+			mc_free_group(grp);
+		}
+	}
 
 	if (mc4_spinlocks != NULL) {
 		kfree(mc4_spinlocks);
@@ -1409,6 +1474,17 @@ mc4_exit(void)
 void
 mc6_exit(void)
 {
+	int ii;
+	struct mcast_group_info *grp;
+	struct list_head *pos, *tmp;
+
+	for (ii = 0; ii < MC6_NUM_HASH_ENTRIES; ii++) {
+		list_for_each_safe(pos, tmp, &mc6_grp_list[ii]) {
+			grp = list_entry(pos, struct mcast_group_info, list);
+			list_del(pos);
+			mc_free_group(grp);
+		}
+	}
 
 	if (mc6_spinlocks != NULL) {
 		kfree(mc6_spinlocks);

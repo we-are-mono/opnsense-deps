@@ -101,7 +101,7 @@ extern int cdx_qos_init_ingress_profiles(void);
 /*
  * Distribution FQR tracking for cleanup.
  */
-#define	CDX_MAX_DIST_FQRS	64
+#define	CDX_MAX_DIST_FQRS	512
 static t_Handle cdx_dist_fqrs[CDX_MAX_DIST_FQRS];
 static int cdx_num_dist_fqrs;
 
@@ -213,14 +213,17 @@ cdx_dist_fq_rx_callback(t_Handle app, t_Handle qm_fqr,
 
 drop:
 	/* No dtsec mapping — log and return buffer via driver path */
-	atomic_fetchadd_64(&cdx_dist_fq_rx_count, 1);
-	if (cdx_dist_fq_rx_count <= 5 ||
-	    (cdx_dist_fq_rx_count % 100000) == 0) {
-		uint32_t base_fqid = QM_FQR_GetFqid(qm_fqr);
-		printf("cdx: dist_fq_rx_callback: count=%ju "
-		    "fqid=0x%x (base=0x%x+%u) DROPPED\n",
-		    (uintmax_t)cdx_dist_fq_rx_count,
-		    base_fqid + fqid_offset, base_fqid, fqid_offset);
+	{
+		uint64_t count;
+
+		count = atomic_fetchadd_64(&cdx_dist_fq_rx_count, 1) + 1;
+		if (count <= 5 || (count % 100000) == 0) {
+			uint32_t base_fqid = QM_FQR_GetFqid(qm_fqr);
+			printf("cdx: dist_fq_rx_callback: count=%ju "
+			    "fqid=0x%x (base=0x%x+%u) DROPPED\n",
+			    (uintmax_t)count,
+			    base_fqid + fqid_offset, base_fqid, fqid_offset);
+		}
 	}
 
 	if (frame_va != NULL)
@@ -306,11 +309,19 @@ cdx_create_port_fqs(void)
 				continue;	/* non-fatal */
 			}
 
+			if (nfqr >= CDX_MAX_DIST_FQRS) {
+				printf("cdx: create_port_fqs: "
+				    "CDX_MAX_DIST_FQRS (%d) exceeded, "
+				    "freeing FQID 0x%x\n",
+				    CDX_MAX_DIST_FQRS, fqid);
+				qman_fqr_free(fqr);
+				continue;
+			}
+
 			qman_fqr_register_cb(fqr,
 			    cdx_dist_fq_rx_callback, ifp);
 
-			if (nfqr < CDX_MAX_DIST_FQRS)
-				cdx_dist_fqrs[nfqr] = fqr;
+			cdx_dist_fqrs[nfqr] = fqr;
 			nfqr++;
 
 		}
@@ -868,6 +879,12 @@ cdx_ioc_set_dpa_params(unsigned long args)
 	{
 		struct dpa_iface_info *p;
 
+		/*
+		 * Walk without dpa_devlist_lock: safe because this runs
+		 * in the ioctl handler during single-threaded module
+		 * init (dpa_app has completed, no concurrent list
+		 * modifications).
+		 */
 		for (p = dpa_interface_info; p != NULL; p = p->next) {
 			if (p->if_flags & IF_TYPE_OFPORT)
 				cdxdrv_create_of_fqs(p);
