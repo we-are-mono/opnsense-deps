@@ -46,7 +46,17 @@ int	cmm_deny_init(const char *confpath);
 void	cmm_deny_fini(void);
 
 /*
+ * Check if a connection should be denied offload by tuple fields.
+ * All address/port arguments are in network byte order.
+ * Returns 1 if denied (do not offload), 0 if allowed.
+ */
+int	cmm_deny_check_tuple(sa_family_t af, uint8_t proto,
+	    const void *saddr, const void *daddr,
+	    uint16_t sport, uint16_t dport, const char *ifname);
+
+/*
  * Check if a PF state should be denied offload.
+ * Wrapper around cmm_deny_check_tuple for pf_state_export.
  * Returns 1 if denied (do not offload), 0 if allowed.
  */
 struct pf_state_export;

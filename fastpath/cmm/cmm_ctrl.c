@@ -300,11 +300,24 @@ cmm_ctrl_accept(struct cmm_global *g)
 
 	g->ctrl_clients[slot] = fd;
 
-	/* Non-blocking so a partial sender can't stall the event loop */
+	/*
+	 * Keep client sockets blocking.  The control protocol is
+	 * request-response with small payloads (< 512 bytes) on a
+	 * Unix domain socket — reads/writes are effectively atomic.
+	 * Non-blocking would break read_exact()/write_exact() which
+	 * loop without EAGAIN handling.  kqueue only dispatches when
+	 * data is available, so blocking reads won't stall the loop.
+	 *
+	 * Set a receive timeout to bound how long a misbehaving
+	 * client can block the event loop (e.g. sends header but
+	 * never sends payload).
+	 */
 	{
-		int flags = fcntl(fd, F_GETFL, 0);
-		if (flags >= 0)
-			fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+		struct timeval tv;
+		tv.tv_sec = 5;
+		tv.tv_usec = 0;
+		setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	}
 
 	EV_SET(&kev, fd, EVFILT_READ, EV_ADD, 0, 0, CMM_UDATA_CTRL_CLIENT);

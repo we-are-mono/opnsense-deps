@@ -130,7 +130,7 @@ neigh_resolve(struct cmm_global *g __unused, struct cmm_neigh *neigh)
 			break;
 		next += rtm->rtm_msglen;
 
-		cmm_rtsock_parse_addrs(rtm, &addrs);
+		cmm_rtsock_parse_addrs(rtm, rtm->rtm_msglen, &addrs);
 
 		if (addrs.dst == NULL || addrs.gateway == NULL)
 			continue;

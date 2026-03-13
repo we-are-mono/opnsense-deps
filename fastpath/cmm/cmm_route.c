@@ -97,7 +97,7 @@ route_resolve(struct cmm_global *g, struct cmm_route *rt)
 	}
 
 	rtm = (struct rt_msghdr *)reply;
-	cmm_rtsock_parse_addrs(rtm, &addrs);
+	cmm_rtsock_parse_addrs(rtm, replylen, &addrs);
 
 	rt->rt_flags = rtm->rtm_flags;
 	rt->mtu = rtm->rtm_rmx.rmx_mtu;
@@ -315,7 +315,8 @@ cmm_route_gc(struct cmm_global *g)
 }
 
 void
-cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm)
+cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
+    size_t msglen)
 {
 	struct cmm_rtsock_addrs addrs;
 	struct cmm_route *rt;
@@ -323,7 +324,7 @@ cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm)
 	uint8_t old_gw[16];
 	int old_oif, alen, i;
 
-	cmm_rtsock_parse_addrs(rtm, &addrs);
+	cmm_rtsock_parse_addrs(rtm, msglen, &addrs);
 
 	cmm_print(CMM_LOG_DEBUG, "route: RTM_%s flags=0x%x",
 	    rtm->rtm_type == RTM_ADD ? "ADD" :
@@ -440,14 +441,3 @@ cmm_route_flush_all_local(void)
 	}
 }
 
-int
-cmm_route_send_fpp(struct cmm_global *g, struct cmm_route *rt, int action)
-{
-	if (rt->neigh == NULL || rt->neigh->state != NEIGH_RESOLVED) {
-		cmm_print(CMM_LOG_DEBUG,
-		    "route: can't send FPP — neighbor not resolved");
-		return (-1);
-	}
-
-	return (cmm_fe_route_register(g, rt));
-}

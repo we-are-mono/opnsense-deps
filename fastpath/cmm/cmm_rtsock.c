@@ -51,20 +51,26 @@ cmm_rtsock_open(void)
      sizeof(long))
 
 void
-cmm_rtsock_parse_addrs(struct rt_msghdr *rtm,
+cmm_rtsock_parse_addrs(struct rt_msghdr *rtm, size_t msglen,
     struct cmm_rtsock_addrs *addrs)
 {
 	struct sockaddr *sa;
-	char *cp;
+	char *cp, *end;
 	int i;
 
 	memset(addrs, 0, sizeof(*addrs));
 	cp = (char *)(rtm + 1);
+	end = (char *)rtm + msglen;
 
 	for (i = 0; i < RTAX_MAX; i++) {
 		if (!(rtm->rtm_addrs & (1 << i)))
 			continue;
+		/* Bounds check: need at least sa_len to read */
+		if (cp + sizeof(struct sockaddr) > end)
+			break;
 		sa = (struct sockaddr *)cp;
+		if (cp + SA_RLEN(sa) > end)
+			break;
 		switch (i) {
 		case RTAX_DST:
 			addrs->dst = sa;
@@ -175,7 +181,7 @@ cmm_rtsock_dispatch(struct cmm_global *g)
 	case RTM_ADD:
 	case RTM_DELETE:
 	case RTM_CHANGE:
-		cmm_route_handle_change(g, rtm);
+		cmm_route_handle_change(g, rtm, (size_t)n);
 		break;
 	default:
 		cmm_print(CMM_LOG_TRACE, "rtsock: unhandled msg type %d",

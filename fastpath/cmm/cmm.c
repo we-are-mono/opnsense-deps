@@ -281,6 +281,20 @@ main(int argc, char *argv[])
 		    strerror(errno));
 		goto out;
 	}
+	/*
+	 * Set receive timeout on the query socket.  cmm_rtsock_get()
+	 * loops reading until it finds a matching reply — without a
+	 * timeout, a missing kernel reply would block the event loop
+	 * forever.  The monitoring socket must NOT have a timeout
+	 * (it blocks in kevent, not read).
+	 */
+	{
+		struct timeval tv;
+		tv.tv_sec = 5;
+		tv.tv_usec = 0;
+		setsockopt(g->rtsock_query_fd, SOL_SOCKET, SO_RCVTIMEO,
+		    &tv, sizeof(tv));
+	}
 	cmm_print(CMM_LOG_INFO, "route sockets opened");
 
 	/* Initialize subsystems */

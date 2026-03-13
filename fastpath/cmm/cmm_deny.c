@@ -273,61 +273,78 @@ cmm_deny_fini(void)
 	deny_count = 0;
 }
 
+/*
+ * Check deny rules against extracted tuple fields.
+ * Used by both poll path (pf_state_export) and push path (pfn_event).
+ * Returns 1 if denied, 0 if allowed.
+ */
 int
-cmm_deny_check(const struct pf_state_export *pfs)
+cmm_deny_check_tuple(sa_family_t af, uint8_t proto,
+    const void *saddr, const void *daddr,
+    uint16_t sport, uint16_t dport, const char *ifname)
 {
 	struct cmm_deny_rule *r;
-	const struct pf_state_key_export *sk;
-	int sidx, didx;
 
 	if (deny_count == 0)
 		return (0);
 
-	sk = &pfs->key[PF_SK_STACK];
-	sidx = (pfs->direction == PF_IN) ? 0 : 1;
-	didx = 1 - sidx;
-
 	STAILQ_FOREACH(r, &deny_rules, entry) {
 		/* Protocol */
-		if (r->proto != 0 && r->proto != pfs->proto)
+		if (r->proto != 0 && r->proto != proto)
 			continue;
 
 		/* Address family */
-		if (r->af != 0 && r->af != pfs->af)
+		if (r->af != 0 && r->af != af)
 			continue;
 
 		/* Source port */
-		if (r->sport != 0 && r->sport != sk->port[sidx])
+		if (r->sport != 0 && r->sport != sport)
 			continue;
 
 		/* Destination port */
-		if (r->dport != 0 && r->dport != sk->port[didx])
+		if (r->dport != 0 && r->dport != dport)
 			continue;
 
 		/* Source address */
 		if (r->src.prefixlen != 0 &&
-		    !addr_match(pfs->af, &sk->addr[sidx],
+		    !addr_match(af, saddr,
 		    &r->src.addr, r->src.prefixlen))
 			continue;
 
 		/* Destination address */
 		if (r->dst.prefixlen != 0 &&
-		    !addr_match(pfs->af, &sk->addr[didx],
+		    !addr_match(af, daddr,
 		    &r->dst.addr, r->dst.prefixlen))
 			continue;
 
 		/* Interface */
 		if (r->ifname[0] != '\0' &&
-		    strcmp(r->ifname, pfs->ifname) != 0)
+		    strcmp(r->ifname, ifname) != 0)
 			continue;
 
 		/* All conditions matched — deny offload */
 		cmm_print(CMM_LOG_DEBUG, "deny: rule matched, "
-		    "proto=%u iface=%s", pfs->proto, pfs->ifname);
+		    "proto=%u iface=%s", proto, ifname);
 		return (1);
 	}
 
 	return (0);
+}
+
+int
+cmm_deny_check(const struct pf_state_export *pfs)
+{
+	const struct pf_state_key_export *sk;
+	int sidx, didx;
+
+	sk = &pfs->key[PF_SK_STACK];
+	sidx = (pfs->direction == PF_IN) ? 0 : 1;
+	didx = 1 - sidx;
+
+	return (cmm_deny_check_tuple(pfs->af, pfs->proto,
+	    &sk->addr[sidx], &sk->addr[didx],
+	    sk->port[sidx], sk->port[didx],
+	    pfs->ifname));
 }
 
 int

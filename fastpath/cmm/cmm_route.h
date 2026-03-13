@@ -49,11 +49,8 @@ void cmm_route_put(struct cmm_route *rt);
 void cmm_route_gc(struct cmm_global *g);
 
 /* Handle routing socket changes — invalidate affected routes */
-void cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm);
-
-/* Send route to CDX via FPP */
-int cmm_route_send_fpp(struct cmm_global *g, struct cmm_route *rt,
-    int action);
+void cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
+    size_t msglen);
 
 /* Invalidate all routes using a specific output interface */
 void cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index);

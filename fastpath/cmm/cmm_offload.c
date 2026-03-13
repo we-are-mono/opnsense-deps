@@ -19,6 +19,12 @@
 #include "cmm_offload.h"
 #include "cmm_itf.h"
 
+/*
+ * Check offload eligibility from pf_state_export (poll path).
+ * A parallel version pfn_event_eligible() in cmm_conn.c mirrors
+ * this logic for pfn_event (push path).  Changes to eligibility
+ * criteria must be applied to BOTH functions.
+ */
 int
 cmm_offload_eligible(const struct pf_state_export *pfs)
 {

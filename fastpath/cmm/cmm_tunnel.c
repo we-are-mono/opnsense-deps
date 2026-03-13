@@ -178,7 +178,7 @@ cmm_tunnel_register(struct cmm_global *g, struct cmm_interface *itf)
 
 	/* Ensure route is programmed in CDX */
 	if (!rt->fpp_programmed) {
-		if (cmm_route_send_fpp(g, rt, 0) < 0) {
+		if (cmm_fe_route_register(g, rt) < 0) {
 			cmm_print(CMM_LOG_DEBUG,
 			    "tunnel: %s route not ready (neighbor?)",
 			    itf->ifname);

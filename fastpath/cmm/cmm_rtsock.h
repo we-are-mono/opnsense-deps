@@ -43,7 +43,7 @@ struct cmm_rtsock_addrs {
 	struct sockaddr		*ifa;	/* interface address */
 };
 
-void cmm_rtsock_parse_addrs(struct rt_msghdr *rtm,
+void cmm_rtsock_parse_addrs(struct rt_msghdr *rtm, size_t msglen,
     struct cmm_rtsock_addrs *addrs);
 
 /* Sequence number (module-internal, exposed for matching) */

@@ -227,6 +227,9 @@ cmm_fe_ct4_register(struct cmm_global *g, struct cmm_conn *conn)
 	fpp_ct_cmd_t cmd;
 	int rc;
 
+	if (g->fci_handle == NULL)
+		return (-1);
+
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.action = FPP_ACTION_REGISTER;
 	cmd.protocol = conn->proto;
@@ -303,6 +306,8 @@ cmm_fe_ct4_deregister(struct cmm_global *g, struct cmm_conn *conn)
 
 	if (!(conn->flags & CONN_F_OFFLOADED))
 		return (0);
+	if (g->fci_handle == NULL)
+		return (-1);
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.action = FPP_ACTION_DEREGISTER;
@@ -342,6 +347,9 @@ cmm_fe_ct6_register(struct cmm_global *g, struct cmm_conn *conn)
 {
 	fpp_ct6_cmd_t cmd;
 	int rc;
+
+	if (g->fci_handle == NULL)
+		return (-1);
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.action = FPP_ACTION_REGISTER;
@@ -394,6 +402,8 @@ cmm_fe_ct6_deregister(struct cmm_global *g, struct cmm_conn *conn)
 
 	if (!(conn->flags & CONN_F_OFFLOADED))
 		return (0);
+	if (g->fci_handle == NULL)
+		return (-1);
 
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.action = FPP_ACTION_DEREGISTER;

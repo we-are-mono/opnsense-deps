@@ -235,8 +235,23 @@ conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 	}
 	if (conn->rep_route->neigh == NULL ||
 	    conn->rep_route->neigh->state != NEIGH_RESOLVED) {
-		cmm_print(CMM_LOG_DEBUG,
-		    "conn: reply neighbor not resolved");
+		if (conn->af == AF_INET) {
+			char sb[INET_ADDRSTRLEN], db[INET_ADDRSTRLEN];
+			inet_ntop(AF_INET, conn->orig_saddr,
+			    sb, sizeof(sb));
+			inet_ntop(AF_INET, conn->orig_daddr,
+			    db, sizeof(db));
+			cmm_print(CMM_LOG_DEBUG,
+			    "conn: reply neighbor not resolved "
+			    "proto=%u %s->%s rep_oif=%d",
+			    conn->proto, sb, db,
+			    conn->rep_route->oif_index);
+		} else {
+			cmm_print(CMM_LOG_DEBUG,
+			    "conn: reply neighbor not resolved "
+			    "rep_oif=%d",
+			    conn->rep_route->oif_index);
+		}
 		return (-1);
 	}
 
@@ -568,7 +583,9 @@ pfn_extract_tuples(struct cmm_conn *conn, const struct pfn_event *ev)
 
 /*
  * Check basic offload eligibility from pfn_event fields.
- * Mirrors cmm_offload_eligible() but reads from pfn_event.
+ * Mirrors cmm_offload_eligible() in cmm_offload.c but reads from
+ * pfn_event instead of pf_state_export.  Changes to eligibility
+ * criteria must be applied to BOTH functions.
  */
 static int
 pfn_event_eligible(const struct pfn_event *ev)
@@ -669,8 +686,9 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 	odport = ev->key[1].port[didx];
 
 	/* Check deny rules */
-	/* TODO: cmm_deny_check takes pf_state_export, would need adapter.
-	 * For now, deny rules are enforced by the reconciliation poll. */
+	if (cmm_deny_check_tuple(af, proto, osaddr, odaddr,
+	    osport, odport, ev->ifname))
+		return;
 
 	conn = conn_find_5tuple(af, proto, osaddr, odaddr, osport, odport);
 	if (conn != NULL) {
