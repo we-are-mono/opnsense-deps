@@ -460,10 +460,14 @@ cmm_route_invalidate_conns(struct cmm_global *g, struct cmm_route *rt)
 }
 
 /*
- * Full offload state reset: deregister all connections from CDX,
- * clear their route pointers, flush all cached routes and neighbors.
- * Connections remain in the hash table — they will re-resolve routes
- * and re-offload on the next poll/event cycle.
+ * Full offload state reset: wipe all CDX tables, then clean up local
+ * state.  Connections remain in the hash table — they will re-resolve
+ * routes and re-offload on the next poll/event cycle.
+ *
+ * Uses cmm_fe_reset() (FPP_CMD_IPVx_RESET) for a guaranteed bulk
+ * wipe of CDX conntracks and routes.  Per-connection deregister is
+ * unreliable when reply tuples have diverged from CDX's stored state
+ * (e.g. after NAT address change).
  *
  * Called on interface reassignment (RTM_NEWADDR / RTM_DELADDR) where
  * the routing topology has fundamentally changed.
@@ -478,20 +482,15 @@ cmm_reset_offload_state(struct cmm_global *g)
 	cmm_print(CMM_LOG_INFO,
 	    "conn: full offload reset (interface reassignment)");
 
-	/* Deregister all offloaded connections and clear route refs */
+	/* 1. Wipe all CDX conntracks + routes in one shot */
+	cmm_fe_reset(g);
+
+	/* 2. Clear local offload flags and route references */
 	for (i = 0; i < CONN_HASH_SIZE; i++) {
 		for (pos = list_first(&conn_hash[i]);
 		    pos != &conn_hash[i]; pos = list_next(pos)) {
 			conn = container_of(pos, struct cmm_conn, hash_entry);
-
-			if (conn->flags & CONN_F_OFFLOADED) {
-				if (conn->af == AF_INET)
-					cmm_fe_ct4_deregister(g, conn);
-				else
-					cmm_fe_ct6_deregister(g, conn);
-				conn->flags &= ~CONN_F_OFFLOADED;
-			}
-
+			conn->flags &= ~CONN_F_OFFLOADED;
 			if (conn->orig_route != NULL) {
 				cmm_route_put(conn->orig_route);
 				conn->orig_route = NULL;
@@ -504,10 +503,10 @@ cmm_reset_offload_state(struct cmm_global *g)
 	}
 	conn_offloaded = 0;
 
-	/* Flush all cached routes (deregister from CDX + free) */
-	cmm_route_flush_all(g);
+	/* 3. Free local route cache (CDX already wiped — skip deregister) */
+	cmm_route_flush_all_local();
 
-	/* Mark all neighbors stale (forces re-resolution) */
+	/* 4. Mark all neighbors stale (forces re-resolution) */
 	cmm_neigh_flush_all();
 }
 

@@ -103,15 +103,33 @@ itf_create(const char *name, int ifindex)
 	return (itf);
 }
 
-static void
+/*
+ * Add an address to an interface's address list.
+ * Returns 0 if the address was newly added, 1 if it already existed
+ * (e.g. DHCP renewal with the same IP).
+ */
+static int
 itf_add_addr(struct cmm_interface *itf, sa_family_t family,
     const void *addr, uint8_t prefixlen)
 {
 	struct cmm_ifaddr *ifa;
+	struct list_head *pos;
+	int alen;
+
+	alen = (family == AF_INET) ? 4 : 16;
+
+	/* Check for duplicate */
+	for (pos = list_first(&itf->addrs); pos != &itf->addrs;
+	    pos = list_next(pos)) {
+		ifa = container_of(pos, struct cmm_ifaddr, entry);
+		if (ifa->family == family &&
+		    memcmp(&ifa->addr, addr, alen) == 0)
+			return (1);
+	}
 
 	ifa = calloc(1, sizeof(*ifa));
 	if (ifa == NULL)
-		return;
+		return (1);
 
 	ifa->family = family;
 	if (family == AF_INET)
@@ -123,6 +141,7 @@ itf_add_addr(struct cmm_interface *itf, sa_family_t family,
 	ifa->entry.prev = NULL;
 
 	list_add(&itf->addrs, &ifa->entry);
+	return (0);
 }
 
 static uint8_t
@@ -561,12 +580,16 @@ cmm_itf_handle_newaddr(struct cmm_global *g, void *msg, int msglen)
 	struct cmm_interface *itf;
 	struct sockaddr *sa;
 	char *cp;
-	int i;
+	int i, is_new = 0;
 
 	(void)msglen;
 
 	itf = cmm_itf_find_by_index(ifam->ifam_index);
 	if (itf == NULL)
+		return;
+
+	/* Skip loopback */
+	if (strncmp(itf->ifname, "lo", 2) == 0)
 		return;
 
 	/* Parse sockaddrs to find the address */
@@ -579,19 +602,26 @@ cmm_itf_handle_newaddr(struct cmm_global *g, void *msg, int msglen)
 			if (sa->sa_family == AF_INET) {
 				struct sockaddr_in *sin;
 				sin = (struct sockaddr_in *)sa;
-				itf_add_addr(itf, AF_INET,
-				    &sin->sin_addr, 0);
+				is_new = (itf_add_addr(itf, AF_INET,
+				    &sin->sin_addr, 0) == 0);
 				cmm_print(CMM_LOG_INFO,
-				    "itf: %s new addr %s",
+				    "itf: %s %s addr %s",
 				    itf->ifname,
+				    is_new ? "new" : "existing",
 				    inet_ntoa(sin->sin_addr));
 			} else if (sa->sa_family == AF_INET6) {
 				struct sockaddr_in6 *sin6;
 				sin6 = (struct sockaddr_in6 *)sa;
-				itf_add_addr(itf, AF_INET6,
-				    &sin6->sin6_addr, 0);
+				/* Skip link-local IPv6 */
+				if (IN6_IS_ADDR_LINKLOCAL(
+				    &sin6->sin6_addr))
+					return;
+				is_new = (itf_add_addr(itf, AF_INET6,
+				    &sin6->sin6_addr, 0) == 0);
 				cmm_print(CMM_LOG_INFO,
-				    "itf: %s new IPv6 addr", itf->ifname);
+				    "itf: %s %s IPv6 addr",
+				    itf->ifname,
+				    is_new ? "new" : "existing");
 			}
 			break;
 		}
@@ -600,8 +630,12 @@ cmm_itf_handle_newaddr(struct cmm_global *g, void *msg, int msglen)
 		    sizeof(long));
 	}
 
-	/* Address change signals interface reassignment — full reset */
-	cmm_reset_offload_state(g);
+	/*
+	 * Only reset on genuinely new addresses (interface reassignment).
+	 * DHCP renewals with the same IP are no-ops.
+	 */
+	if (is_new)
+		cmm_reset_offload_state(g);
 }
 
 void
@@ -611,12 +645,16 @@ cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen)
 	struct cmm_interface *itf;
 	struct sockaddr *sa;
 	char *cp;
-	int i;
+	int i, deleted = 0;
 
 	(void)msglen;
 
 	itf = cmm_itf_find_by_index(ifam->ifam_index);
 	if (itf == NULL)
+		return;
+
+	/* Skip loopback */
+	if (strncmp(itf->ifname, "lo", 2) == 0)
 		return;
 
 	/* Parse sockaddrs to find the deleted address */
@@ -628,6 +666,15 @@ cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen)
 		if (i == RTAX_IFA) {
 			struct list_head *pos, *tmp;
 			struct cmm_ifaddr *ifa;
+
+			/* Skip link-local IPv6 */
+			if (sa->sa_family == AF_INET6) {
+				struct sockaddr_in6 *sin6;
+				sin6 = (struct sockaddr_in6 *)sa;
+				if (IN6_IS_ADDR_LINKLOCAL(
+				    &sin6->sin6_addr))
+					return;
+			}
 
 			for (pos = list_first(&itf->addrs);
 			    pos != &itf->addrs; ) {
@@ -656,6 +703,7 @@ cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen)
 					    itf->ifname);
 					list_del(&ifa->entry);
 					free(ifa);
+					deleted = 1;
 					break;
 				}
 				pos = tmp;
@@ -667,8 +715,9 @@ cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen)
 		    sizeof(long));
 	}
 
-	/* Address removal signals interface reassignment — full reset */
-	cmm_reset_offload_state(g);
+	/* Only reset if we actually removed an address we were tracking */
+	if (deleted)
+		cmm_reset_offload_state(g);
 }
 
 int

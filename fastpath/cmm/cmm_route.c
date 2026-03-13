@@ -407,8 +407,15 @@ cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index)
 		    count, oif_index);
 }
 
+/*
+ * Flush all cached routes — local state only.
+ * Clears fpp_programmed without calling cmm_fe_route_deregister(),
+ * because CDX tables have already been wiped by cmm_fe_reset().
+ * Frees entries with refcount 0; remaining entries will be freed
+ * when connections release their references.
+ */
 void
-cmm_route_flush_all(struct cmm_global *g)
+cmm_route_flush_all_local(void)
 {
 	struct cmm_route *rt;
 	struct list_head *pos, *tmp;
@@ -419,8 +426,7 @@ cmm_route_flush_all(struct cmm_global *g)
 		while (pos != &route_hash[i]) {
 			tmp = list_next(pos);
 			rt = container_of(pos, struct cmm_route, entry);
-			if (rt->fpp_programmed)
-				cmm_fe_route_deregister(g, rt);
+			rt->fpp_programmed = 0;
 			if (rt->neigh != NULL) {
 				cmm_neigh_put(rt->neigh);
 				rt->neigh = NULL;
