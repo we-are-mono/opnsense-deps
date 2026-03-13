@@ -34,6 +34,7 @@
 #include "cmm_bridge.h"
 #include "cmm_wifi.h"
 #include "cmm_pppoe.h"
+#include "cmm_mcast.h"
 #include "cmm_lagg.h"
 
 static struct list_head itf_hash[ITF_HASH_SIZE];
@@ -560,12 +561,14 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 		itf->mtu = ifm->ifm_data.ifi_mtu;
 	}
 
-	/* Notify LAGG, VLAN, tunnel, WiFi, PPPoE, and bridge modules of flag changes */
+	/* Notify LAGG, VLAN, tunnel, WiFi, PPPoE, multicast, and bridge modules */
 	cmm_lagg_notify(g, itf);
 	cmm_vlan_notify(g, itf);
 	cmm_tunnel_notify(g, itf);
 	cmm_wifi_notify(g, itf);
 	cmm_pppoe_notify(g, itf);
+	cmm_mcast_itf_update(g, itf->ifname,
+	    (itf->flags & IFF_UP) ? 1 : 0);
 
 	/* If this is a bridge or a potential bridge member, rescan */
 	if ((itf->itf_flags & ITF_F_BRIDGE) ||

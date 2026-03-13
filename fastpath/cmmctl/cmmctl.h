@@ -39,5 +39,7 @@ int	cmmctl_icc_main(int argc, char **argv, int fd);
 int	cmmctl_l2tp_main(int argc, char **argv, int fd);
 int	cmmctl_macvlan_main(int argc, char **argv, int fd);
 int	cmmctl_tx_main(int argc, char **argv, int fd);
+int	cmmctl_mc4_main(int argc, char **argv, int fd);
+int	cmmctl_mc6_main(int argc, char **argv, int fd);
 
 #endif /* CMMCTL_H */

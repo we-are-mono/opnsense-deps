@@ -21,7 +21,7 @@ CMM_DIR=	${SRCDIR}/cmm
 CTL_SRCS=	cmmctl.c cmmctl_qm.c cmmctl_tunnel.c cmmctl_stat.c cmmctl_ff.c \
 		cmmctl_socket.c cmmctl_bridge.c cmmctl_pktcap.c cmmctl_prf.c \
 		cmmctl_natpt.c cmmctl_icc.c cmmctl_l2tp.c cmmctl_macvlan.c \
-		cmmctl_tx.c
+		cmmctl_tx.c cmmctl_mcast.c
 CTL_OBJS=	${CTL_SRCS:.c=.o}
 
 PROG=		cmmctl

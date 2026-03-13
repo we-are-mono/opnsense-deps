@@ -30,7 +30,8 @@ SRCS=		cmm.c \
 		cmm_tunnel.c \
 		cmm_ctrl.c \
 		cmm_wifi.c \
-		cmm_pppoe.c
+		cmm_pppoe.c \
+		cmm_mcast.c
 
 CFLAGS+=	-I${.CURDIR}/../fci_lib
 CFLAGS+=	-I${.CURDIR}/../fci

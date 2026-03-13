@@ -42,6 +42,7 @@
 #include "cmm_bridge.h"
 #include "cmm_wifi.h"
 #include "cmm_pppoe.h"
+#include "cmm_mcast.h"
 #include "cmm_ctrl.h"
 #include "pf_notify.h"
 #include "libfci.h"
@@ -315,6 +316,7 @@ main(int argc, char *argv[])
 	cmm_bridge_init(g);
 	cmm_wifi_init(g);
 	cmm_pppoe_init(g);
+	cmm_mcast_init();
 
 	if (cmm_ipsec_init() < 0)
 		goto out;
@@ -490,6 +492,7 @@ out:
 	cmm_ctrl_fini(g);
 	cmm_sa_flush_all(g);
 	cmm_conn_deregister_all(g);
+	cmm_mcast_fini();
 	cmm_wifi_fini(g);
 	cmm_bridge_fini(g);
 	cmm_socket_fini(g);

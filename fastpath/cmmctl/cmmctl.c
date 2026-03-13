@@ -164,6 +164,8 @@ static struct cmmctl_cmd commands[] = {
 	{ "l2tp",   cmmctl_l2tp_main,  "L2TP tunnel interfaces" },
 	{ "macvlan", cmmctl_macvlan_main, "Virtual MAC interfaces" },
 	{ "tx",     cmmctl_tx_main,    "TX DSCP to VLAN PCP mapping" },
+	{ "mc4",    cmmctl_mc4_main,   "IPv4 multicast offload" },
+	{ "mc6",    cmmctl_mc6_main,   "IPv6 multicast offload" },
 	{ NULL, NULL, NULL }
 };
 

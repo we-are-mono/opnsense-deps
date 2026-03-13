@@ -20,6 +20,7 @@
 #include "cmm_route.h"
 #include "cmm_itf.h"
 #include "cmm_bridge.h"
+#include "cmm_mcast.h"
 
 /* Conntrack command flags (from Linux forward_engine.c) */
 #define CTCMD_FLAGS_ORIG_DISABLED	(1 << 0)
@@ -42,6 +43,14 @@ cmm_fe_reset(struct cmm_global *g)
 	rc = fci_write(g->fci_handle, FPP_CMD_IPV6_RESET, 0, NULL);
 	if (rc != 0)
 		cmm_print(CMM_LOG_WARN, "fe: IPv6 reset failed: %d", rc);
+
+	rc = fci_write(g->fci_handle, FPP_CMD_MC4_RESET, 0, NULL);
+	if (rc != 0)
+		cmm_print(CMM_LOG_WARN, "fe: MC4 reset failed: %d", rc);
+
+	rc = fci_write(g->fci_handle, FPP_CMD_MC6_RESET, 0, NULL);
+	if (rc != 0)
+		cmm_print(CMM_LOG_WARN, "fe: MC6 reset failed: %d", rc);
 
 	return (0);
 }

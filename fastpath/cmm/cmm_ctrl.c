@@ -23,6 +23,7 @@
 #include "cmm_tunnel.h"
 #include "cmm_l2tp.h"
 #include "cmm_socket.h"
+#include "cmm_mcast.h"
 
 /* kqueue udata tags — cast to void * for EV_SET */
 #define CMM_UDATA_CTRL_LISTEN	((void *)(uintptr_t)1)
@@ -366,6 +367,27 @@ cmm_ctrl_dispatch(struct cmm_global *g, int client_fd)
 			ctrl_close_client(g, client_fd);
 			return;
 		}
+	}
+
+	/*
+	 * Multicast commands — CMM maintains a shadow table and
+	 * forwards to CDX via FCI.  Not FPP whitelist passthrough.
+	 */
+	switch (hdr.cmd) {
+	case FPP_CMD_MC4_MULTICAST:
+		cmm_mcast_ctrl_mc4(g, client_fd, cmd_buf, hdr.len);
+		return;
+	case FPP_CMD_MC4_RESET:
+		cmm_mcast_ctrl_mc4_reset(g, client_fd);
+		return;
+	case FPP_CMD_MC6_MULTICAST:
+		cmm_mcast_ctrl_mc6(g, client_fd, cmd_buf, hdr.len);
+		return;
+	case FPP_CMD_MC6_RESET:
+		cmm_mcast_ctrl_mc6_reset(g, client_fd);
+		return;
+	default:
+		break;
 	}
 
 	/*
