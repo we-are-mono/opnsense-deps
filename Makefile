@@ -6,7 +6,7 @@
 # Clean all build artifacts:
 #   make -C /build/opnsense-deps clean
 #
-# Build full image (clones repos, patches, kernel, modules, image):
+# Build full image (kernel, modules, userspace, package, image):
 #   make -C /build/opnsense-deps image
 #
 # Build subsets:
@@ -34,8 +34,8 @@ KERNBUILDDIR?=	/usr/obj${SRCDIR}/arm64.aarch64/sys/GATEWAY
 # OPNsense build settings
 OPS_SETTINGS?=	26.1
 OPS_BRANCH=	stable/${OPS_SETTINGS}
-IMAGESDIR=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/images
-SETSDIR=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/sets
+IMAGESDIR?=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/images
+SETSDIR?=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/sets
 
 # Common args for all kernel module builds
 # Host clang cross-compiles with explicit --target (bsd.kmod.mk does NOT add it)
@@ -70,7 +70,7 @@ PKG_METADIR=	${OPSDIR}/pkg
 # Top-level targets
 # ============================================================
 
-all: dist
+all: modules userspace
 
 # ============================================================
 # Kernel modules (all independent — safe for -j)
@@ -172,29 +172,34 @@ modules: build-cdx build-fci build-auto_bridge build-pf_notify \
 
 fmlib:
 	@mkdir -p ${BUILDDIR}/fmlib
-	cd ${BUILDDIR}/fmlib && ${MAKE} -f ${FASTPATH}/fmlib/Makefile.cross all
+	cd ${BUILDDIR}/fmlib && ${MAKE} -f ${FASTPATH}/fmlib/Makefile.cross \
+		SYSROOT=${SYSROOT} KSRCDIR=${SRCDIR} all
 
 fmc: fmlib
 	@mkdir -p ${BUILDDIR}/fmc
 	cd ${BUILDDIR}/fmc && ${MAKE} -f ${FASTPATH}/fmc/Makefile.cross \
-		FMLIB_LIB=${BUILDDIR}/fmlib all
+		SYSROOT=${SYSROOT} KSRCDIR=${SRCDIR} FMLIB_LIB=${BUILDDIR}/fmlib all
 
 dpa_app: fmc
 	@mkdir -p ${BUILDDIR}/dpa_app
 	cd ${BUILDDIR}/dpa_app && ${MAKE} -f ${FASTPATH}/dpa_app/Makefile.cross \
+		SYSROOT=${SYSROOT} KSRCDIR=${SRCDIR} \
 		FMLIB_LIB=${BUILDDIR}/fmlib FMC_LIB=${BUILDDIR}/fmc all
 
 cmm:
 	@mkdir -p ${BUILDDIR}/cmm
-	cd ${BUILDDIR}/cmm && ${MAKE} -f ${FASTPATH}/cmm/Makefile.cross all
+	cd ${BUILDDIR}/cmm && ${MAKE} -f ${FASTPATH}/cmm/Makefile.cross \
+		SYSROOT=${SYSROOT} KSRCDIR=${SRCDIR} all
 
 cmmctl:
 	@mkdir -p ${BUILDDIR}/cmmctl
-	cd ${BUILDDIR}/cmmctl && ${MAKE} -f ${FASTPATH}/cmmctl/Makefile.cross all
+	cd ${BUILDDIR}/cmmctl && ${MAKE} -f ${FASTPATH}/cmmctl/Makefile.cross \
+		SYSROOT=${SYSROOT} all
 
 fand:
 	@mkdir -p ${BUILDDIR}/fand
-	cd ${BUILDDIR}/fand && ${MAKE} -f ${DRIVERS}/fand/Makefile all
+	cd ${BUILDDIR}/fand && ${MAKE} -f ${DRIVERS}/fand/Makefile \
+		SYSROOT=${SYSROOT} all
 
 userspace: fmlib fmc dpa_app cmm cmmctl fand
 	@mkdir -p ${DISTDIR}
@@ -205,35 +210,10 @@ userspace: fmlib fmc dpa_app cmm cmmctl fand
 	cp ${BUILDDIR}/fand/fand ${DISTDIR}/
 
 # ============================================================
-# Collect outputs into dist/
-# ============================================================
-
-dist: modules userspace
-	@mkdir -p ${DISTDIR}
-	cp ${KMOD_CDX}/cdx.ko ${DISTDIR}/
-	cp ${KMOD_FCI}/fci.ko ${DISTDIR}/
-	cp ${KMOD_AB}/auto_bridge.ko ${DISTDIR}/
-	cp ${KMOD_PN}/pf_notify.ko ${DISTDIR}/
-	cp ${KMOD_EMC}/emc2302.ko ${DISTDIR}/
-	cp ${KMOD_INA}/ina2xx.ko ${DISTDIR}/
-	cp ${KMOD_LP}/lp5812.ko ${DISTDIR}/
-	cp ${KMOD_SFP}/sfpled.ko ${DISTDIR}/
-	cp ${KMOD_PCF}/pcf2131.ko ${DISTDIR}/
-	cp ${KMOD_CAAM}/caam.ko ${DISTDIR}/
-	cp ${KMOD_TMP}/tmp431.ko ${DISTDIR}/
-	cp ${KMOD_MWIFI}/mwifiex.ko ${DISTDIR}/
-	cp ${KMOD_DW}/dpaa_wifi.ko ${DISTDIR}/
-	cp ${BUILDDIR}/fmc/fmc ${DISTDIR}/
-	cp ${BUILDDIR}/dpa_app/dpa_app ${DISTDIR}/
-	cp ${BUILDDIR}/cmm/cmm ${DISTDIR}/
-	cp ${BUILDDIR}/cmmctl/cmmctl ${DISTDIR}/
-	cp ${BUILDDIR}/fand/fand ${DISTDIR}/
-
-# ============================================================
 # FreeBSD package (mono-gateway.pkg)
 # ============================================================
 
-package: clean dist
+package: all
 	@rm -f ${DISTDIR}/mono-gateway-*.pkg
 	@rm -rf ${PKG_STAGEDIR}
 	@mkdir -p ${PKG_STAGEDIR}/boot/modules
@@ -286,7 +266,7 @@ package: clean dist
 	@echo "==> Package: ${DISTDIR}/mono-gateway-${PKG_VERSION}.pkg"
 
 # ============================================================
-# Full image build (clones repos, applies patches, builds everything)
+# Full image build (kernel, modules, userspace, package, image)
 # ============================================================
 
 _NCPU!=		sysctl -n hw.ncpu 2>/dev/null || echo 4
@@ -336,10 +316,8 @@ image:
 	else \
 		echo "    libxml2 already in sysroot"; \
 	fi
-	@echo "==> Step 3: Building modules and userspace"
-	${MAKE} -C ${OPSDIR} -j${_NCPU} all
-	@echo "==> Step 4: Building package"
-	${MAKE} -C ${OPSDIR} package
+	@echo "==> Step 3: Building modules, userspace, and package"
+	${MAKE} -C ${OPSDIR} -j${_NCPU} package
 	@echo "==> Step 5: Assembling image"
 	rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
 		${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz
@@ -373,7 +351,12 @@ clean:
 	${MAKE} -C ${KMOD_DW} ${KMOD_ARGS} clean
 	rm -rf ${BUILDDIR}
 
-.PHONY: all modules userspace dist package image clean fetch-vendor \
+# Ensure "make -j clean all" serializes clean before build
+.ORDER: clean all
+.ORDER: clean modules
+.ORDER: clean userspace
+
+.PHONY: all modules userspace package image clean fetch-vendor \
 	build-cdx build-fci build-auto_bridge build-pf_notify \
 	build-emc2302 build-ina2xx build-lp5812 build-sfpled build-pcf2131 \
 	build-caam build-tmp431 build-mwifiex build-dpaa_wifi \

@@ -12,13 +12,13 @@
 # (matching the ELF layout), causing page table corruption on MMU enable.
 #
 # Usage: mk-kernel-img.sh [kernel_elf] [output]
-#   kernel_elf  defaults to /usr/obj/mnt/vision/freebsd-src/arm64.aarch64/sys/MONO-GATEWAY/kernel.full
-#   output      defaults to /mnt/vision/kernel.img
+#   kernel_elf  defaults to /usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY/kernel.full
+#   output      defaults to ./kernel.img
 
 set -e
 
-KERNEL_ELF="${1:-/usr/obj/mnt/vision/freebsd-src/arm64.aarch64/sys/MONO-GATEWAY/kernel.full}"
-OUTPUT="${2:-/mnt/vision/kernel.img}"
+KERNEL_ELF="${1:-/usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY/kernel.full}"
+OUTPUT="${2:-./kernel.img}"
 TMPBIN=$(mktemp /tmp/kernel.bin.XXXXXX)
 TMPIMG=$(mktemp /tmp/kernel.img.XXXXXX)
 

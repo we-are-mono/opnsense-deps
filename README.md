@@ -34,7 +34,6 @@ opnsense-deps/
 │   ├── cmm/              # Connection Manager daemon
 │   └── cmmctl/           # CMM control utility
 ├── config/               # FMC/CDX XML configuration files
-├── patches/              # historical kernel patches (reference only)
 ├── rc.d/                 # rc.d service scripts and syshook scripts
 ├── pkg/                  # FreeBSD package metadata
 ├── _vendor/              # NXP vendor repos (cloned at build time, gitignored)
@@ -70,8 +69,13 @@ sudo pkg install -y git aarch64-binutils qemu-user-static python3
 
 ### 2. Set up `/build`
 
-All build paths assume the source tree is at `/build`. This directory must contain
-`opnsense-build`, `opnsense-src`, and `opnsense-deps`.
+All build paths default to `/build`. This directory must contain
+`opnsense-build`, `opnsense-src`, and `opnsense-deps`. To use a different
+location, pass `SRCTOP` to make:
+
+```
+sudo make -C /path/to/opnsense-deps image SRCTOP=/path/to/sources
+```
 
 **Local development** (source tree lives on the build server):
 
@@ -146,6 +150,18 @@ echo "PORTVERSION=$(pkg -v)" | sudo tee /usr/ports/ports-mgmt/pkg/Makefile
 set exists in the sets directory, remove it before building the image. The xtools overlay/restore
 mechanism (`setup_xtools`/`setup_xbase`) is broken for cross-builds and will leave amd64 binaries
 in the image.
+
+### 4–7. Build everything (single command)
+
+After completing steps 1–3, a single command builds the kernel, modules, userspace,
+package, and assembles the final eMMC image:
+
+```
+sudo make -C /build/opnsense-deps image
+```
+
+The individual steps below are documented for development workflows where you
+only need to rebuild part of the stack.
 
 ### 4. Build kernel
 
@@ -268,7 +284,7 @@ sudo make -C /build/opnsense-deps -j24 modules
 ```
 
 Output `.ko` files land in the driver directory and are collected into `dist/`
-by `make dist`.
+by `make all`.
 
 ## Local / Test Deployment
 

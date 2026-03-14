@@ -5,7 +5,7 @@
 #
 # Builds in the current directory (use /tmp/cmm-build or similar).
 # Requires OPNsense base build first:
-#   sudo make -C /build/opnsense-build base DEVICE=MONO-GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build
+#   sudo make -C /build/opnsense-build base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build
 #
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
