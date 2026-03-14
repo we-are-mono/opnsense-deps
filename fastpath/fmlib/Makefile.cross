@@ -18,6 +18,7 @@ TARGET?=	--target=aarch64-unknown-freebsd14.3
 SRCDIR?=	${MAKEFILE:H}
 FMLIB_INC=	${SRCDIR}/include/fmd
 FMLIB_SRC=	${SRCDIR}/src
+KSRCDIR?=	/build/opnsense-src
 
 # Platform: LS1043/LS1046A (FManv3, DPAA v11)
 # NCSW_LINUX: selects types_linux.h (stdint/stdbool — works on FreeBSD too)
@@ -28,6 +29,7 @@ CFLAGS+=	-I${FMLIB_INC}
 CFLAGS+=	-I${FMLIB_INC}/Peripherals
 CFLAGS+=	-I${FMLIB_INC}/Peripherals/common
 CFLAGS+=	-I${FMLIB_INC}/integrations
+CFLAGS+=	-I${KSRCDIR}/sys/contrib/ncsw/inc/ioctls
 
 LIB=		libfm.a
 

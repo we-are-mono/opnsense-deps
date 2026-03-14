@@ -22,6 +22,7 @@ SRCDIR?=	${MAKEFILE:H}/source
 FMLIB_INC?=	${MAKEFILE:H}/../fmlib/include/fmd
 FMLIB_LIB?=	/tmp/fmlib-build
 TCLAP_INC?=	${MAKEFILE:H}/tclap
+KSRCDIR?=	/build/opnsense-src
 
 CFLAGS=		-O2 -pipe -Wall -fPIC
 CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
@@ -30,6 +31,7 @@ CFLAGS+=	-I${FMLIB_INC}
 CFLAGS+=	-I${FMLIB_INC}/Peripherals
 CFLAGS+=	-I${FMLIB_INC}/Peripherals/common
 CFLAGS+=	-I${FMLIB_INC}/integrations
+CFLAGS+=	-I${KSRCDIR}/sys/contrib/ncsw/inc/ioctls
 CFLAGS+=	-I${SYSROOT}/usr/local/include/libxml2
 CFLAGS+=	-I${TCLAP_INC}/..
 

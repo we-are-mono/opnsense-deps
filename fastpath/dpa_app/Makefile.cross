@@ -24,6 +24,7 @@ FMLIB_LIB?=	/tmp/fmlib-build
 FMC_INC?=	${MAKEFILE:H}/../fmc/source
 FMC_LIB?=	/tmp/fmc-build
 CDX_INC?=	${MAKEFILE:H}/../vendor/cdx
+KSRCDIR?=	/build/opnsense-src
 
 CFLAGS=		-O2 -pipe -Wall -Wno-unused-variable
 CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
@@ -33,6 +34,7 @@ CFLAGS+=	-I${FMLIB_INC}
 CFLAGS+=	-I${FMLIB_INC}/Peripherals
 CFLAGS+=	-I${FMLIB_INC}/Peripherals/common
 CFLAGS+=	-I${FMLIB_INC}/integrations
+CFLAGS+=	-I${KSRCDIR}/sys/contrib/ncsw/inc/ioctls
 CFLAGS+=	-I${CDX_INC}
 
 LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
