@@ -1,20 +1,20 @@
 # Top-level build Makefile for opnsense-deps
 #
 # Build everything:
-#   make -C /build/opnsense-deps all
+#   make -C /usr/deps all
 #
 # Clean all build artifacts:
-#   make -C /build/opnsense-deps clean
+#   make -C /usr/deps clean
 #
 # Build full image (kernel, modules, userspace, package, image):
-#   make -C /build/opnsense-deps image
+#   make -C /usr/deps image
 #
 # Build subsets:
-#   make -C /build/opnsense-deps modules    # kernel modules only
-#   make -C /build/opnsense-deps userspace   # userspace only
+#   make -C /usr/deps modules    # kernel modules only
+#   make -C /usr/deps userspace   # userspace only
 #
 # Parallel build (modules build concurrently):
-#   make -C /build/opnsense-deps -j24 all
+#   make -C /usr/deps -j24 all
 #
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
@@ -24,10 +24,9 @@ FASTPATH=	${OPSDIR}/fastpath
 DRIVERS=	${OPSDIR}/drivers
 VENDORDIR?=	${OPSDIR}/_vendor
 
-# Cross-compilation settings (all ?= for easy override)
-SRCTOP?=	/build
-SRCDIR?=	${SRCTOP}/opnsense-src
-BUILDTOOL?=	${SRCTOP}/opnsense-build
+# Source and tooling paths (standard OPNsense layout)
+SRCDIR?=	/usr/src
+TOOLSDIR?=	/usr/tools
 SYSROOT?=	/usr/obj${SRCDIR}/arm64.aarch64/tmp
 KERNBUILDDIR?=	/usr/obj${SRCDIR}/arm64.aarch64/sys/GATEWAY
 
@@ -38,7 +37,7 @@ IMAGESDIR?=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/images
 SETSDIR?=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/sets
 
 # Common args for all kernel module builds
-# Host clang cross-compiles with explicit --target (bsd.kmod.mk does NOT add it)
+# Explicit --target ensures cross-compilation works from amd64; harmless on native aarch64
 KMOD_ARGS=	SYSDIR=${SRCDIR}/sys \
 		KERNBUILDDIR=${KERNBUILDDIR} \
 		MACHINE=arm64 MACHINE_ARCH=aarch64 \
@@ -276,17 +275,17 @@ image:
 	@rm -rf ${DISTDIR}/*
 	@touch ${DISTDIR}/.keep
 	@echo "==> Step 1: Checking repositories"
-	@test -d ${SRCDIR}/.git || git clone https://github.com/we-are-mono/opnsense-src.git ${SRCDIR}
-	@test -d ${BUILDTOOL}/.git || git clone https://github.com/maurice-w/opnsense-vm-images.git ${BUILDTOOL}
-	@cp -n ${OPSDIR}/config/GATEWAY.conf ${BUILDTOOL}/device/ 2>/dev/null || true
-	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && git pull
+	@test -d ${SRCDIR}/.git || git clone https://github.com/we-are-mono/opnsense-src.git -b ${OPS_BRANCH} ${SRCDIR}
+	@test -d ${TOOLSDIR}/.git || git clone https://github.com/maurice-w/opnsense-vm-images.git ${TOOLSDIR}
+	@cp -n ${OPSDIR}/config/GATEWAY.conf ${TOOLSDIR}/device/ 2>/dev/null || true
+	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && git pull || echo "    git pull skipped (NFS or no remote)"
 	@echo "==> Step 2: Building kernel (clean)"
 	rm -f ${SETSDIR}/kernel-*-GATEWAY.txz
 	chflags -R noschg /usr/obj${SRCDIR}/arm64.aarch64 2>/dev/null || true
 	rm -rf /usr/obj${SRCDIR}/arm64.aarch64
-	${MAKE} -C ${BUILDTOOL} kernel \
+	${MAKE} -C ${TOOLSDIR} kernel \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
-		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
+		TOOLSDIR=${TOOLSDIR} SRCDIR=${SRCDIR}
 	@echo "==> Step 2a: Populating sysroot from base set"
 	@_base=$$(ls ${SETSDIR}/base-*-aarch64-GATEWAY.txz 2>/dev/null | head -1); \
 	if [ -z "$$_base" ]; then \
@@ -321,9 +320,9 @@ image:
 	@echo "==> Step 5: Assembling image"
 	rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
 		${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz
-	${MAKE} -C ${BUILDTOOL} arm-5G \
+	${MAKE} -C ${TOOLSDIR} arm-5G \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
-		TOOLSDIR=${BUILDTOOL} SRCDIR=${SRCDIR}
+		TOOLSDIR=${TOOLSDIR} SRCDIR=${SRCDIR}
 	@echo "==> Step 6: Compressing and copying to dist/"
 	@mkdir -p ${DISTDIR}
 	gzip -k ${IMAGESDIR}/OPNsense-*-GATEWAY.img

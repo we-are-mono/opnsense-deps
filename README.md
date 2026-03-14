@@ -56,67 +56,74 @@ on performance or functionality.
 
 ## Build instructions
 
-All commands run on the build server (amd64 FreeBSD).
+All commands run on the build server (FreeBSD, matching the OPNsense base version).
 
-The build server should run the same FreeBSD version that OPNsense is based on (e.g., FreeBSD 14.3
-for OPNsense 26.1). Mismatched versions can cause ABI issues in cross-compiled kernel modules.
+The build server should run the same FreeBSD version that OPNsense is based on
+(e.g., FreeBSD 14.3 for OPNsense 26.1). Mismatched versions can cause ABI
+issues in kernel modules. Native aarch64 builds are preferred; cross-compilation
+from amd64 also works (see below).
 
 ### 1. Prerequisites
+
+**Native aarch64 build server:**
+
+```
+sudo pkg install -y git python3
+```
+
+**Cross-compilation from amd64:**
 
 ```
 sudo pkg install -y git aarch64-binutils qemu-user-static python3
 ```
 
-### 2. Set up `/build`
+### 2. Directory layout
 
-All build paths default to `/build`. This directory must contain
-`opnsense-build`, `opnsense-src`, and `opnsense-deps`. To use a different
-location, pass `SRCTOP` to make:
+The build system uses standard OPNsense paths under `/usr/`. Repositories map
+to these paths either by cloning directly or via NFS + nullfs mounts:
+
+| Path | Repository | OPNsense variable |
+|------|-----------|-------------------|
+| `/usr/src` | [we-are-mono/opnsense-src](https://github.com/we-are-mono/opnsense-src) | `SRCDIR` |
+| `/usr/tools` | [maurice-w/opnsense-vm-images](https://github.com/maurice-w/opnsense-vm-images) | `TOOLSDIR` |
+| `/usr/deps` | [we-are-mono/opnsense-deps](https://github.com/we-are-mono/opnsense-deps) | (this repo) |
+| `/usr/core` | [opnsense/core](https://github.com/opnsense/core) | `COREDIR` |
+
+All paths are overridable: `sudo make -C /usr/deps image SRCDIR=/my/src TOOLSDIR=/my/tools`
+
+**Option A — Local development** (clone directly):
 
 ```
-sudo make -C /path/to/opnsense-deps image SRCTOP=/path/to/sources
+sudo git clone https://github.com/we-are-mono/opnsense-src.git /usr/src
+sudo git clone https://github.com/maurice-w/opnsense-vm-images.git /usr/tools
+sudo git clone https://github.com/we-are-mono/opnsense-deps /usr/deps
+sudo cp /usr/deps/config/GATEWAY.conf /usr/tools/device/
 ```
 
-**Local development** (source tree lives on the build server):
-
-```
-sudo mkdir /build && sudo chown $(whoami) /build
-```
-
-**Remote source via NFS** (source tree lives on another machine):
+**Option B — Remote source via NFS** (source tree on another machine):
 
 ```
 # Enable the NFS client
 sudo sysrc nfs_client_enable="YES"
 sudo service nfsclient start
 
-# Mount the remote share — the NFS export is the directory containing
-# opnsense-build, opnsense-src, opnsense-deps, etc.
-# Replace [server] with the NFS server's hostname and [nfs-export] with
-# the path to the exported directory.
-sudo mkdir -p /mnt/opnsense /build
+# Mount the remote NFS export
+# Replace [server] and [nfs-export] with your NFS server and export path.
+# The exported directory should contain opnsense-src, opnsense-build,
+# opnsense-deps, and opnsense-core as subdirectories.
+sudo mkdir -p /mnt/opnsense /usr/tools /usr/core /usr/deps
 echo '[server]:[nfs-export] /mnt/opnsense nfs rw,late 0 0' | sudo tee -a /etc/fstab
-echo '/mnt/opnsense /build nullfs rw,late 0 0' | sudo tee -a /etc/fstab
-sudo mount /mnt/opnsense
-sudo mount /build
+echo '/mnt/opnsense/opnsense-src /usr/src nullfs rw,late 0 0' | sudo tee -a /etc/fstab
+echo '/mnt/opnsense/opnsense-build /usr/tools nullfs rw,late 0 0' | sudo tee -a /etc/fstab
+echo '/mnt/opnsense/opnsense-deps /usr/deps nullfs rw,late 0 0' | sudo tee -a /etc/fstab
+echo '/mnt/opnsense/opnsense-core /usr/core nullfs rw,late 0 0' | sudo tee -a /etc/fstab
+sudo mount -a
+
+sudo cp /usr/deps/config/GATEWAY.conf /usr/tools/device/
 ```
 
-Using nullfs (rather than a symlink) ensures `pwd` reports `/build/...` in build
+Using nullfs (rather than symlinks) ensures `pwd` reports `/usr/...` in build
 output, keeping kernel version strings and module paths clean.
-
-### 2b. Clone repositories
-
-Both the local and NFS paths need the following repositories in `/build`:
-
-```
-cd /build
-git clone https://github.com/maurice-w/opnsense-vm-images.git opnsense-build
-git clone https://github.com/we-are-mono/opnsense-src.git opnsense-src
-git clone https://github.com/we-are-mono/opnsense-deps
-
-# Copy the GATEWAY device config into the build system
-cp /build/opnsense-deps/config/GATEWAY.conf /build/opnsense-build/device/
-```
 
 ### 3. Prefetch base and packages
 
@@ -126,13 +133,13 @@ Check https://opnsense-update.walker.earth/FreeBSD:14:aarch64/26.1/sets/ for ava
 ```
 export VERSION=26.1.1   # use latest available on the mirror
 
-sudo make -C /build/opnsense-build prefetch-base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
+sudo make -C /usr/tools prefetch-base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
 
 # The build system expects a -GATEWAY suffix on the base set
 cd /usr/local/opnsense/build/26.1/aarch64/sets
 sudo mv base-${VERSION}-aarch64.txz base-${VERSION}-aarch64-GATEWAY.txz
 
-sudo make -C /build/opnsense-build prefetch-packages DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
+sudo make -C /usr/tools prefetch-packages DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
 ```
 
 This skips `make base`, `make ports`, `make core`, and `make plugins` (no cross-compilation needed).
@@ -157,7 +164,7 @@ After completing steps 1–3, a single command builds the kernel, modules, users
 package, and assembles the final eMMC image:
 
 ```
-sudo make -C /build/opnsense-deps image
+sudo make -C /usr/deps image
 ```
 
 The individual steps below are documented for development workflows where you
@@ -166,14 +173,12 @@ only need to rebuild part of the stack.
 ### 4. Build kernel
 
 ```
-sudo make -C /build/opnsense-build kernel DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src
+sudo make -C /usr/tools kernel DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools
 ```
 
-The OPNsense build system defaults `SRCDIR` to `/usr/src`; since our source tree
-is named `opnsense-src`, the explicit `SRCDIR=` is required on all make targets
-that touch the kernel source (kernel, arm).
-
-The kernel is cross-compiled natively (no QEMU). Package installation during `make arm` uses QEMU user-static emulation.
+On a native aarch64 build server, no cross-compilation flags are needed. On an
+amd64 host, the kernel is cross-compiled natively (no QEMU). Package
+installation during `make arm` uses QEMU user-static emulation.
 
 **Rebuilding:** The build system caches the kernel set in the sets directory and
 skips the build if one already exists. When rebuilding after source changes,
@@ -181,23 +186,30 @@ remove the stale set and obj tree first:
 
 ```
 sudo rm -f /usr/local/opnsense/build/26.1/aarch64/sets/kernel-*-GATEWAY.txz
-sudo rm -rf /usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY
+sudo rm -rf /usr/obj/usr/src/arm64.aarch64/sys/GATEWAY
 ```
 
-### 5. Install libxml2 into cross-compilation sysroot
+### 5. Install libxml2
 
-Required by opnsense-deps (fmc links against libxml2). Fetch the aarch64 package
-from the FreeBSD pkg mirror and extract its headers and libraries into the
-cross-compilation sysroot created by `make kernel`.
+Required by opnsense-deps (fmc links against libxml2).
 
-> **Note:** `make image` does this automatically. The manual steps below are only
-> needed when building without `make image`.
+**Native aarch64 build server:**
+
+```
+sudo pkg install -y libxml2
+```
+
+**Cross-compilation from amd64:**
+
+Fetch the aarch64 package from the FreeBSD pkg mirror and extract its headers
+and libraries into the sysroot created by `make kernel`. `make image` does this
+automatically; the manual steps below are only needed when building without it.
 
 ```
 fetch -o /tmp/libxml2.pkg 'https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/libxml2-2.15.2.pkg'
 mkdir -p /tmp/libxml2-extract && cd /tmp/libxml2-extract && tar xf /tmp/libxml2.pkg
 
-SYSROOT=/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+SYSROOT=/usr/obj/usr/src/arm64.aarch64/tmp
 sudo mkdir -p ${SYSROOT}/usr/local/include ${SYSROOT}/usr/local/lib
 sudo cp -r /tmp/libxml2-extract/usr/local/include/libxml2 ${SYSROOT}/usr/local/include/
 sudo cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* ${SYSROOT}/usr/local/lib/
@@ -206,13 +218,13 @@ sudo cp -a /tmp/libxml2-extract/usr/local/lib/libxml2* ${SYSROOT}/usr/local/lib/
 If the package version has changed, override it in the Makefile:
 
 ```
-make -C /build/opnsense-deps image LIBXML2_PKG=libxml2-2.16.0.pkg
+make -C /usr/deps image LIBXML2_PKG=libxml2-2.16.0.pkg
 ```
 
 ### 6. Build custom modules and tools (everything in this repo)
 
 ```
-sudo make -C /build/opnsense-deps -j24 all
+sudo make -C /usr/deps -j24 all
 ```
 
 The first build automatically clones NXP vendor repositories (mwifiex driver
@@ -222,7 +234,7 @@ reuse the cached clones. To force a fresh clone, remove `_vendor/` and rebuild.
 ### 7. Assemble eMMC image
 
 ```
-sudo make -C /build/opnsense-build arm-5G DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build SRCDIR=/build/opnsense-src
+sudo make -C /usr/tools arm-5G DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools
 ```
 
 Output: `/usr/local/opnsense/build/26.1/aarch64/images/OPNsense-*-arm-aarch64-GATEWAY.img`
@@ -245,7 +257,7 @@ branch.
 **Making a change:**
 
 ```bash
-cd /build/opnsense-src
+cd /usr/src
 
 # See Mono Gateway commits on top of upstream
 git log --oneline origin/stable/26.1..HEAD
@@ -277,10 +289,10 @@ source. To iterate on one:
 
 ```bash
 # Rebuild just caam
-sudo make -C /build/opnsense-deps build-caam
+sudo make -C /usr/deps build-caam
 
 # Or rebuild all modules
-sudo make -C /build/opnsense-deps -j24 modules
+sudo make -C /usr/deps -j24 modules
 ```
 
 Output `.ko` files land in the driver directory and are collected into `dist/`

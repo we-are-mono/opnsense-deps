@@ -1,7 +1,7 @@
 # FMC cross-compilation Makefile for FreeBSD arm64
 #
 # Usage:
-#   make -f /build/opnsense-deps/fastpath/fmc/Makefile.cross
+#   make -f /usr/deps/fastpath/fmc/Makefile.cross
 #
 # Builds in the current directory (use /tmp/fmc-build or similar).
 # Requires:
@@ -12,7 +12,7 @@
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 
-SYSROOT?=	/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc
 CXX?=		c++
 AR?=		ar
@@ -22,7 +22,7 @@ SRCDIR?=	${MAKEFILE:H}/source
 FMLIB_INC?=	${MAKEFILE:H}/../fmlib/include/fmd
 FMLIB_LIB?=	/tmp/fmlib-build
 TCLAP_INC?=	${MAKEFILE:H}/tclap
-KSRCDIR?=	/build/opnsense-src
+KSRCDIR?=	/usr/src
 
 CFLAGS=		-O2 -pipe -Wall -fPIC
 CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}

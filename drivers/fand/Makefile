@@ -2,12 +2,12 @@
 #
 # Build:
 #   mkdir -p /tmp/fand-build && cd /tmp/fand-build
-#   make -f /build/opnsense-deps/drivers/fand/Makefile
+#   make -f /usr/deps/drivers/fand/Makefile
 #
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 
-SYSROOT?=	/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc
 TARGET?=	--target=aarch64-unknown-freebsd14.3
 

@@ -1,1 +1,1 @@
-/build/opnsense-deps/_vendor/mwifiex/mlan/mlan_cfp.c
+/usr/deps/_vendor/mwifiex/mlan/mlan_cfp.c

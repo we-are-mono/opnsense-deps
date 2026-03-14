@@ -1,8 +1,8 @@
 # pf_notify kernel module
 #
 # Build (cross-compile for arm64):
-#   make -C /build/opnsense-deps/fastpath/pf_notify \
-#       KERNBUILDDIR=/usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY \
+#   make -C /usr/deps/fastpath/pf_notify \
+#       KERNBUILDDIR=/usr/obj/usr/src/arm64.aarch64/sys/GATEWAY \
 #       MACHINE=arm64 MACHINE_ARCH=aarch64 CC=cc LD=ld.lld
 #
 # Copyright 2026 Mono Technologies Inc.

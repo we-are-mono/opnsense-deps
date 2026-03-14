@@ -1,1 +1,1 @@
-/build/opnsense-deps/_vendor/mwifiex/mlan/mlan_uap_cmdevent.c
+/usr/deps/_vendor/mwifiex/mlan/mlan_uap_cmdevent.c

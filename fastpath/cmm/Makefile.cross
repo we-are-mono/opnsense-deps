@@ -1,16 +1,16 @@
 # CMM cross-compilation Makefile for arm64
 #
 # Usage:
-#   make -f /build/opnsense-deps/fastpath/cmm/Makefile.cross
+#   make -f /usr/deps/fastpath/cmm/Makefile.cross
 #
 # Builds in the current directory (use /tmp/cmm-build or similar).
 # Requires OPNsense base build first:
-#   sudo make -C /build/opnsense-build base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/build/opnsense-build
+#   sudo make -C /usr/tools base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools
 #
 # Copyright 2026 Mono Technologies Inc.
 # SPDX-License-Identifier: BSD-2-Clause
 
-SYSROOT?=	/usr/obj/build/opnsense-src/arm64.aarch64/tmp
+SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc
 TARGET?=	--target=aarch64-unknown-freebsd14.3
 
@@ -30,7 +30,7 @@ PROG=		cmm
 
 CFLAGS=		-O2 -pipe -Wall -Wextra -Wno-unused-parameter
 CFLAGS+=	--sysroot=${SYSROOT} ${TARGET}
-KSRCDIR?=	/build/opnsense-src
+KSRCDIR?=	/usr/src
 CFLAGS+=	-isystem ${KSRCDIR}/sys
 CFLAGS+=	-I${FCI_DIR} -I${FCI_HDR} -I${SRCDIR}/include -I${CMM_DIR} \
 		-I${SRCDIR}/auto_bridge -I${SRCDIR}/pf_notify

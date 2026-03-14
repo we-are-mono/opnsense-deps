@@ -1,8 +1,8 @@
 # TI INA2xx Power Monitor kernel module for FreeBSD
 #
 # Build:
-#   make -C /build/opnsense-deps/drivers/ina2xx \
-#       KERNBUILDDIR=/usr/obj/build/opnsense-src/arm64.aarch64/sys/GATEWAY \
+#   make -C /usr/deps/drivers/ina2xx \
+#       KERNBUILDDIR=/usr/obj/usr/src/arm64.aarch64/sys/GATEWAY \
 #       MACHINE=arm64 MACHINE_ARCH=aarch64 CC=cc LD=ld.lld
 #
 # Copyright 2026 Mono Technologies Inc.

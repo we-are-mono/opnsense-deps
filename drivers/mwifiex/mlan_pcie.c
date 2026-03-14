@@ -1,1 +1,1 @@
-/build/opnsense-deps/_vendor/mwifiex/mlan/mlan_pcie.c
+/usr/deps/_vendor/mwifiex/mlan/mlan_pcie.c

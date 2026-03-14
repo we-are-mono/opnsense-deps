@@ -1,1 +1,1 @@
-/build/opnsense-deps/_vendor/mwifiex/mlan/mlan_sta_cmd.c
+/usr/deps/_vendor/mwifiex/mlan/mlan_sta_cmd.c
