@@ -26,8 +26,8 @@ VENDORDIR?=	${OPSDIR}/_vendor
 
 # Cross-compilation settings (all ?= for easy override)
 SRCTOP?=	/build
-SRCDIR=		${SRCTOP}/opnsense-src
-BUILDTOOL=	${SRCTOP}/opnsense-build
+SRCDIR?=	${SRCTOP}/opnsense-src
+BUILDTOOL?=	${SRCTOP}/opnsense-build
 SYSROOT?=	/usr/obj${SRCDIR}/arm64.aarch64/tmp
 KERNBUILDDIR?=	/usr/obj${SRCDIR}/arm64.aarch64/sys/GATEWAY
 
