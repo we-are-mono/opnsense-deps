@@ -14,7 +14,7 @@ TARGET?=	--target=aarch64-unknown-freebsd14.3
 CFLAGS=		-O2 -pipe -Wall --sysroot=${SYSROOT} ${TARGET}
 LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
 
-SRCDIR?=	${MAKEFILE:H}
+SRCDIR=		${MAKEFILE:H}
 
 PROG=	fand
 
