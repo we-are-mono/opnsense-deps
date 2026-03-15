@@ -15,7 +15,7 @@ CC?=		cc
 AR?=		ar
 TARGET?=	--target=aarch64-unknown-freebsd14.3
 
-SRCDIR?=	${MAKEFILE:H}
+SRCDIR=		${MAKEFILE:H}
 FMLIB_INC=	${SRCDIR}/include/fmd
 FMLIB_SRC=	${SRCDIR}/src
 KSRCDIR?=	/build/opnsense-src
