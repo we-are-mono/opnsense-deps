@@ -14,7 +14,7 @@ SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc
 TARGET?=	--target=aarch64-unknown-freebsd14.3
 
-SRCDIR?=	${MAKEFILE:H}/..
+SRCDIR=		${MAKEFILE:H}/..
 CTL_DIR=	${SRCDIR}/cmmctl
 CMM_DIR=	${SRCDIR}/cmm
 

@@ -17,7 +17,7 @@ CC?=		cc
 CXX?=		c++
 TARGET?=	--target=aarch64-unknown-freebsd14.3
 
-SRCDIR?=	${MAKEFILE:H}/../vendor/dpa_app
+SRCDIR=		${MAKEFILE:H}/../vendor/dpa_app
 DPA_APP_DIR?=	${MAKEFILE:H}
 FMLIB_INC?=	${MAKEFILE:H}/../fmlib/include/fmd
 FMLIB_LIB?=	/tmp/fmlib-build

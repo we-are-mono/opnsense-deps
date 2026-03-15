@@ -18,7 +18,7 @@ CXX?=		c++
 AR?=		ar
 TARGET?=	--target=aarch64-unknown-freebsd14.3
 
-SRCDIR?=	${MAKEFILE:H}/source
+SRCDIR=		${MAKEFILE:H}/source
 FMLIB_INC?=	${MAKEFILE:H}/../fmlib/include/fmd
 FMLIB_LIB?=	/tmp/fmlib-build
 TCLAP_INC?=	${MAKEFILE:H}/tclap
