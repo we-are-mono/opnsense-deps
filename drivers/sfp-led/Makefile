@@ -12,7 +12,7 @@
 KMOD=	sfpled
 SRCS=	sfp_led.c
 
-# Auto-generated headers required for OFW/FDT + GPIO + I2C driver
-SRCS+=	opt_platform.h device_if.h bus_if.h ofw_bus_if.h gpiobus_if.h iicbus_if.h
+# Auto-generated headers required for OFW/FDT + GPIO driver
+SRCS+=	opt_platform.h device_if.h bus_if.h ofw_bus_if.h gpiobus_if.h
 
 .include <bsd.kmod.mk>

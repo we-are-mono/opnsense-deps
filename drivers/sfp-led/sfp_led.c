@@ -4,22 +4,23 @@
  * Copyright 2026 Mono Technologies Inc.
  * Author: Tomaz Zaman <tomaz@mono.si>
  *
- * SFP LED Control Driver for FreeBSD (Passive Monitor)
+ * SFP LED Control Driver for FreeBSD
  *
- * Controls SFP port LEDs based on module presence and link state.
- * This driver passively monitors GPIO signals and network interface
- * state without interfering with the SFP subsystem or MAC driver.
+ * Controls SFP port LEDs based on network interface link state reported
+ * by the MAC driver (dtsec).  The MAC driver owns the SFP GPIOs
+ * (mod-def0, LOS, TX-disable) and reports link state via ifnet:
  *
- * Detection method:
- *   - Module presence: mod-def0 GPIO (active-low, directly from SFP cage)
- *   - Link state: LOS GPIO (fiber) and/or netdev link state (DAC)
- *   - Activity: Poll netdev tx/rx packet counters
- *   - Cable type: I2C EEPROM bytes 3/8 for DAC vs fiber classification
+ *   LINK_STATE_UNKNOWN  — no module inserted
+ *   LINK_STATE_DOWN     — module present, no signal
+ *   LINK_STATE_UP       — module present, signal OK
+ *
+ * This driver only acquires the LED GPIO pins and passively monitors
+ * the ifnet link state to drive them.
  *
  * LED behavior:
  *   State                      | Green (Link) | Orange (Activity)
  *   ---------------------------|--------------|-------------------
- *   No module                  | OFF          | OFF
+ *   No module (UNKNOWN)        | OFF          | OFF
  *   Module present, no link    | OFF          | ON (solid)
  *   Module present, link up    | ON           | Blinks on traffic
  *
@@ -29,7 +30,7 @@
  *       sfp-ports = <&sfp_xfi0>, <&sfp_xfi1>;
  *   };
  *
- *   // SFP nodes must have leds, mod-def0-gpios, los-gpios, i2c-bus
+ *   // SFP nodes must have leds property with 2 LED phandles
  *   // LED nodes must have gpios property
  *   // MAC nodes must have sfp = <&sfp_xfiN> for netdev association
  */
@@ -38,7 +39,6 @@
 #include <sys/kernel.h>
 #include <sys/bus.h>
 #include <sys/module.h>
-#include <sys/malloc.h>
 #include <sys/taskqueue.h>
 #include <sys/systm.h>
 #include <sys/socket.h>
@@ -54,57 +54,30 @@
 
 #include <dev/gpio/gpiobusvar.h>
 
-#include <dev/iicbus/iicbus.h>
-#include <dev/iicbus/iiconf.h>
-
 #define	SFPLED_POLL_MS		100
 #define	SFPLED_MAX_PORTS	2
 #define	SFPLED_MAX_IFP_RETRIES	60	/* 6 seconds at 100ms */
-
-/* SFP EEPROM A0h (address 0x50 = 0xA0 in 8-bit) */
-#define	SFP_I2C_ADDR		0xA0
-#define	SFP_COMPLIANCE_3	3	/* 10G/1G Ethernet compliance */
-#define	SFP_COMPLIANCE_8	8	/* SFP+ cable technology */
-
-/* Byte 3 bits */
-#define	SFP_IF_1X_COPPER_PASSIVE	0x01
-#define	SFP_IF_1X_COPPER_ACTIVE		0x02
-
-/* Byte 8 bits */
-#define	SFP_CT_PASSIVE		0x04
-#define	SFP_CT_ACTIVE		0x08
 
 struct sfp_led_port {
 	struct sfp_led_softc *sc;
 	phandle_t	sfp_node;	/* SFP DT node handle */
 	pcell_t		sfp_xref;	/* SFP DT xref (raw phandle value) */
 
-	/* GPIO pins (acquired lazily from SFP + LED DT nodes) */
-	gpio_pin_t	mod_def0;	/* module present (active-low) */
-	gpio_pin_t	los;		/* loss of signal (active-high) */
+	/* LED GPIO pins (acquired lazily — gpiobus may not be ready) */
 	gpio_pin_t	link_led;	/* green LED */
 	gpio_pin_t	activity_led;	/* orange LED */
 	bool		gpio_acquired;
-	bool		gpio_failed;	/* permanent failure, stop retrying */
 
 	/* LED DT node phandles (read at attach, used for GPIO acquisition) */
 	pcell_t		link_led_xref;
 	pcell_t		activity_led_xref;
-
-	/* I2C bus (resolved lazily from SFP node's i2c-bus property) */
-	pcell_t		i2c_xref;	/* i2c-bus phandle from DT */
-	device_t	iicbus;		/* resolved I2C bus device */
-	bool		i2c_resolved;
-	bool		i2c_valid;	/* true if i2c_xref was found in DT */
 
 	/* Network interface (resolved lazily) */
 	if_t		ifp;
 	int		ifp_retries;
 
 	/* Cached state */
-	bool		last_present;
-	bool		last_link;
-	bool		is_dac;
+	int		last_state;	/* LINK_STATE_* */
 	uint64_t	last_tx_pkts;
 	uint64_t	last_rx_pkts;
 	bool		activity_on;
@@ -125,7 +98,7 @@ static int sfpled_detach(device_t dev);
 static void sfpled_poll(void *arg, int pending);
 
 /* ----------------------------------------------------------------
- * GPIO acquisition (lazy — gpiobus may not be ready at attach time)
+ * LED GPIO acquisition (lazy — gpiobus may not be ready at attach)
  * ---------------------------------------------------------------- */
 
 static bool
@@ -135,41 +108,14 @@ sfpled_acquire_gpios(struct sfp_led_port *port)
 	phandle_t led_node;
 	int err;
 
-	/* Acquire mod-def0 GPIO from SFP node */
-	err = gpio_pin_get_by_ofw_property(dev, port->sfp_node,
-	    "mod-def0-gpios", &port->mod_def0);
-	if (err != 0) {
-		if (err == ENODEV)
-			return (false);	/* gpiobus not ready, retry later */
-		device_printf(dev, "sfp%d: mod-def0 GPIO error: %d\n",
-		    port->index, err);
-		port->gpio_failed = true;
-		return (false);
-	}
-
-	/* Acquire LOS GPIO from SFP node */
-	err = gpio_pin_get_by_ofw_property(dev, port->sfp_node,
-	    "los-gpios", &port->los);
-	if (err != 0) {
-		device_printf(dev, "sfp%d: los GPIO error: %d\n",
-		    port->index, err);
-		gpio_pin_release(port->mod_def0);
-		port->mod_def0 = NULL;
-		port->gpio_failed = true;
-		return (false);
-	}
-
 	/* Acquire link LED GPIO from LED DT node */
 	led_node = OF_node_from_xref(port->link_led_xref);
 	err = gpio_pin_get_by_ofw_idx(dev, led_node, 0, &port->link_led);
 	if (err != 0) {
+		if (err == ENODEV)
+			return (false);	/* gpiobus not ready, retry later */
 		device_printf(dev, "sfp%d: link LED GPIO error: %d\n",
 		    port->index, err);
-		gpio_pin_release(port->los);
-		port->los = NULL;
-		gpio_pin_release(port->mod_def0);
-		port->mod_def0 = NULL;
-		port->gpio_failed = true;
 		return (false);
 	}
 	gpio_pin_setflags(port->link_led, GPIO_PIN_OUTPUT);
@@ -182,83 +128,14 @@ sfpled_acquire_gpios(struct sfp_led_port *port)
 		    port->index, err);
 		gpio_pin_release(port->link_led);
 		port->link_led = NULL;
-		gpio_pin_release(port->los);
-		port->los = NULL;
-		gpio_pin_release(port->mod_def0);
-		port->mod_def0 = NULL;
-		port->gpio_failed = true;
 		return (false);
 	}
 	gpio_pin_setflags(port->activity_led, GPIO_PIN_OUTPUT);
 
 	port->gpio_acquired = true;
-	device_printf(dev, "sfp%d: GPIOs acquired\n", port->index);
+	device_printf(dev, "sfp%d: LED GPIOs acquired\n", port->index);
 
 	return (true);
-}
-
-/* ----------------------------------------------------------------
- * I2C helpers (for DAC cable detection)
- * ---------------------------------------------------------------- */
-
-static void
-sfpled_resolve_i2c(struct sfp_led_port *port)
-{
-	port->i2c_resolved = true;
-
-	if (!port->i2c_valid)
-		return;
-
-	port->iicbus = OF_device_from_xref(port->i2c_xref);
-	if (port->iicbus == NULL) {
-		device_printf(port->sc->dev,
-		    "sfp%d: i2c-bus not yet available\n", port->index);
-		port->i2c_resolved = false;	/* retry next poll */
-	}
-}
-
-static int
-sfpled_i2c_read_byte(struct sfp_led_port *port, uint8_t reg, uint8_t *val)
-{
-	struct iic_msg msgs[2];
-	int err;
-
-	if (port->iicbus == NULL)
-		return (ENXIO);
-
-	msgs[0].slave = SFP_I2C_ADDR;
-	msgs[0].flags = IIC_M_WR | IIC_M_NOSTOP;
-	msgs[0].len = 1;
-	msgs[0].buf = &reg;
-
-	msgs[1].slave = SFP_I2C_ADDR;
-	msgs[1].flags = IIC_M_RD;
-	msgs[1].len = 1;
-	msgs[1].buf = val;
-
-	err = iicbus_request_bus(port->iicbus, port->sc->dev, IIC_WAIT);
-	if (err != 0)
-		return (err);
-
-	err = iicbus_transfer(port->iicbus, msgs, 2);
-
-	iicbus_release_bus(port->iicbus, port->sc->dev);
-	return (err);
-}
-
-static bool
-sfpled_is_dac(struct sfp_led_port *port)
-{
-	uint8_t byte3, byte8;
-
-	if (sfpled_i2c_read_byte(port, SFP_COMPLIANCE_3, &byte3) != 0)
-		return (false);
-
-	if (sfpled_i2c_read_byte(port, SFP_COMPLIANCE_8, &byte8) != 0)
-		return (false);
-
-	return ((byte3 & (SFP_IF_1X_COPPER_PASSIVE | SFP_IF_1X_COPPER_ACTIVE)) ||
-	    (byte8 & (SFP_CT_PASSIVE | SFP_CT_ACTIVE)));
 }
 
 /* ----------------------------------------------------------------
@@ -280,7 +157,7 @@ sfpled_find_ifp(struct sfp_led_port *port)
 
 	/*
 	 * The DPAA dtsec driver registers as devclass "dtsec" but names
-	 * its interfaces "ethN".  Walk the dtsec devclass to find the
+	 * its interfaces "dtsecN".  Walk the dtsec devclass to find the
 	 * device whose DT node has an "sfp" property matching our SFP
 	 * phandle, then look up the interface by constructed name.
 	 */
@@ -350,111 +227,66 @@ sfpled_set_activity(struct sfp_led_port *port, bool on)
 static void
 sfpled_poll_port(struct sfp_led_port *port)
 {
-	bool present, link;
+	int state;
 
-	/* Lazy GPIO acquisition */
+	/* Lazy LED GPIO acquisition */
 	if (!port->gpio_acquired) {
-		if (port->gpio_failed)
-			return;
 		if (!sfpled_acquire_gpios(port))
 			return;
 	}
 
-	/* Module presence via mod-def0 GPIO (active-low: active=true means
-	 * present, because gpio_pin_is_active accounts for GPIO_ACTIVE_LOW) */
-	gpio_pin_is_active(port->mod_def0, &present);
-
-	/* Handle module insertion/removal */
-	if (present != port->last_present) {
-		port->last_present = present;
-
-		if (!present) {
-			/* Module removed */
-			sfpled_set_link(port, false);
-			sfpled_set_activity(port, false);
-			port->last_link = false;
-			port->is_dac = false;
-			port->activity_on = false;
-			port->last_tx_pkts = 0;
-			port->last_rx_pkts = 0;
-		} else {
-			/* Module inserted — detect cable type, show present */
-			sfpled_set_link(port, false);
-			sfpled_set_activity(port, true);
-
-			/* Lazy I2C resolution */
-			if (!port->i2c_resolved)
-				sfpled_resolve_i2c(port);
-
-			if (port->iicbus != NULL) {
-				port->is_dac = sfpled_is_dac(port);
-				device_printf(port->sc->dev,
-				    "sfp%d: module inserted (%s)\n",
-				    port->index,
-				    port->is_dac ? "DAC" : "fiber");
-			} else {
-				device_printf(port->sc->dev,
-				    "sfp%d: module inserted (no I2C)\n",
-				    port->index);
-			}
-		}
-	}
-
-	if (!present)
-		return;
-
 	/* Lazy netdev lookup */
-	if (port->ifp == NULL && port->ifp_retries < SFPLED_MAX_IFP_RETRIES) {
+	if (port->ifp == NULL) {
+		if (port->ifp_retries >= SFPLED_MAX_IFP_RETRIES)
+			return;
 		sfpled_find_ifp(port);
 		port->ifp_retries++;
+		if (port->ifp == NULL)
+			return;
 	}
 
-	/*
-	 * Link detection:
-	 * - Fiber: LOS GPIO (active-high, so active=true means signal LOST)
-	 * - DAC: netdev link state (LOS may not be connected on DAC cables)
-	 * - Combined: link if LOS clear OR netdev reports LINK_STATE_UP
-	 */
-	link = false;
+	/* Read link state from MAC driver */
+	state = if_getlinkstate(port->ifp);
 
-	/* Check LOS GPIO — works reliably for fiber */
-	{
-		bool los_active;
-		gpio_pin_is_active(port->los, &los_active);
-		if (!los_active)
-			link = true;	/* LOS not asserted = signal present */
-	}
+	/* Handle state transitions */
+	if (state != port->last_state) {
+		port->last_state = state;
 
-	/* Also check netdev link state — covers DAC and all cases */
-	if (!link && port->ifp != NULL) {
-		if (if_getlinkstate(port->ifp) == LINK_STATE_UP)
-			link = true;
-	}
-
-	/* Handle link state changes */
-	if (link != port->last_link) {
-		port->last_link = link;
-		sfpled_set_link(port, link);
-
-		if (link) {
-			/* Link up — start activity monitoring */
+		switch (state) {
+		case LINK_STATE_UNKNOWN:
+			/* No module — both LEDs off */
+			sfpled_set_link(port, false);
 			sfpled_set_activity(port, false);
+			port->activity_on = false;
 			port->last_tx_pkts = 0;
 			port->last_rx_pkts = 0;
-			port->activity_on = false;
-		} else {
-			/* Link down — solid activity to show module present */
+			break;
+
+		case LINK_STATE_DOWN:
+			/* Module present, no link — orange solid */
+			sfpled_set_link(port, false);
 			sfpled_set_activity(port, true);
 			port->activity_on = false;
+			port->last_tx_pkts = 0;
+			port->last_rx_pkts = 0;
+			break;
+
+		case LINK_STATE_UP:
+			/* Link up — green on, start activity monitoring */
+			sfpled_set_link(port, true);
+			sfpled_set_activity(port, false);
+			port->activity_on = false;
+			port->last_tx_pkts = 0;
+			port->last_rx_pkts = 0;
+			break;
 		}
 	}
 
-	if (!link)
+	if (state != LINK_STATE_UP)
 		return;
 
-	/* Activity monitoring — blink on traffic */
-	if (port->ifp != NULL &&
-	    (if_getflags(port->ifp) & IFF_UP) != 0) {
+	/* Activity monitoring — blink orange on traffic */
+	if ((if_getflags(port->ifp) & IFF_UP) != 0) {
 		uint64_t tx = if_getcounter(port->ifp, IFCOUNTER_OPACKETS);
 		uint64_t rx = if_getcounter(port->ifp, IFCOUNTER_IPACKETS);
 
@@ -535,6 +367,7 @@ sfpled_attach(device_t dev)
 		port->index = i;
 		port->sfp_xref = sfp_phandles[i];
 		port->sfp_node = OF_node_from_xref(sfp_phandles[i]);
+		port->last_state = -1;	/* force initial transition */
 
 		if (port->sfp_node <= 0) {
 			device_printf(dev, "sfp%d: invalid phandle\n", i);
@@ -552,12 +385,6 @@ sfpled_attach(device_t dev)
 		}
 		port->link_led_xref = led_phandles[0];
 		port->activity_led_xref = led_phandles[1];
-
-		/* Read i2c-bus phandle from SFP node */
-		if (OF_getencprop(port->sfp_node, "i2c-bus",
-		    &port->i2c_xref, sizeof(port->i2c_xref)) > 0) {
-			port->i2c_valid = true;
-		}
 
 		registered++;
 	}
@@ -599,10 +426,6 @@ sfpled_detach(device_t dev)
 			gpio_pin_release(port->activity_led);
 		if (port->link_led != NULL)
 			gpio_pin_release(port->link_led);
-		if (port->los != NULL)
-			gpio_pin_release(port->los);
-		if (port->mod_def0 != NULL)
-			gpio_pin_release(port->mod_def0);
 
 		/* Release network interface reference */
 		if (port->ifp != NULL)
@@ -626,4 +449,3 @@ DEFINE_CLASS_0(sfpled, sfpled_driver, sfpled_methods,
 DRIVER_MODULE(sfpled, simplebus, sfpled_driver, 0, 0);
 DRIVER_MODULE(sfpled, ofwbus, sfpled_driver, 0, 0);
 MODULE_DEPEND(sfpled, gpiobus, 1, 1, 1);
-MODULE_DEPEND(sfpled, iicbus, 1, 1, 1);
