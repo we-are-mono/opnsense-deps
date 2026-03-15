@@ -276,7 +276,7 @@ image:
 	@touch ${DISTDIR}/.keep
 	@echo "==> Step 1: Checking repositories"
 	@test -d ${SRCDIR}/.git || git clone https://github.com/we-are-mono/opnsense-src.git -b ${OPS_BRANCH} ${SRCDIR}
-	@test -d ${TOOLSDIR}/.git || git clone https://github.com/maurice-w/opnsense-vm-images.git ${TOOLSDIR}
+	@test -d ${TOOLSDIR}/.git || git clone https://github.com/opnsense/tools.git ${TOOLSDIR}
 	@cp -n ${OPSDIR}/config/GATEWAY.conf ${TOOLSDIR}/device/ 2>/dev/null || true
 	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && git pull || echo "    git pull skipped (NFS or no remote)"
 	@echo "==> Step 2: Building kernel (clean)"
