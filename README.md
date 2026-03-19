@@ -85,7 +85,7 @@ to these paths either by cloning directly or via NFS + nullfs mounts:
 | Path | Repository | OPNsense variable |
 |------|-----------|-------------------|
 | `/usr/src` | [we-are-mono/opnsense-src](https://github.com/we-are-mono/opnsense-src) | `SRCDIR` |
-| `/usr/tools` | [maurice-w/opnsense-vm-images](https://github.com/maurice-w/opnsense-vm-images) | `TOOLSDIR` |
+| `/usr/tools` | [opnsense/tools](https://github.com/opnsense/tools) | `TOOLSDIR` |
 | `/usr/deps` | [we-are-mono/opnsense-deps](https://github.com/we-are-mono/opnsense-deps) | (this repo) |
 | `/usr/core` | [opnsense/core](https://github.com/opnsense/core) | `COREDIR` |
 
@@ -95,7 +95,7 @@ All paths are overridable: `sudo make -C /usr/deps image SRCDIR=/my/src TOOLSDIR
 
 ```
 sudo git clone https://github.com/we-are-mono/opnsense-src.git /usr/src
-sudo git clone https://github.com/maurice-w/opnsense-vm-images.git /usr/tools
+sudo git clone https://github.com/opnsense/tools.git /usr/tools
 sudo git clone https://github.com/we-are-mono/opnsense-deps /usr/deps
 sudo cp /usr/deps/config/GATEWAY.conf /usr/tools/device/
 ```
