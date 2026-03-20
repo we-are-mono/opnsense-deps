@@ -33,12 +33,13 @@ CFLAGS+=	-I${FMLIB_INC}/Peripherals/common
 CFLAGS+=	-I${FMLIB_INC}/integrations
 CFLAGS+=	-I${KSRCDIR}/sys/contrib/ncsw/inc/ioctls
 CFLAGS+=	-I${SYSROOT}/usr/local/include/libxml2
+CFLAGS+=	-I/usr/local/include/libxml2
 CFLAGS+=	-I${TCLAP_INC}/..
 
 CXXFLAGS=	${CFLAGS}
 
 LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
-LDFLAGS+=	-L${FMLIB_LIB} -L${SYSROOT}/usr/local/lib
+LDFLAGS+=	-L${FMLIB_LIB} -L${SYSROOT}/usr/local/lib -L/usr/local/lib
 LIBS=		-lfmc -lfm -lxml2 -lz -lm -lpthread
 
 # Library objects (everything except FMC.o and FMCDummyDriver.o)
