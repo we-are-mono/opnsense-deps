@@ -38,7 +38,7 @@ CFLAGS+=	-I${KSRCDIR}/sys/contrib/ncsw/inc/ioctls
 CFLAGS+=	-I${CDX_INC}
 
 LDFLAGS=	${TARGET} --sysroot=${SYSROOT}
-LDFLAGS+=	-L${FMC_LIB} -L${FMLIB_LIB} -L${SYSROOT}/usr/local/lib
+LDFLAGS+=	-L${FMC_LIB} -L${FMLIB_LIB} -L${SYSROOT}/usr/local/lib -L/usr/local/lib
 LIBS=		-lfmc -lfm -lxml2 -lz -lm -lpthread -lc++
 
 PROG=		dpa_app
