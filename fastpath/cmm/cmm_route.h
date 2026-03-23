@@ -29,6 +29,7 @@ struct cmm_route {
 	uint32_t		rt_flags;	/* RTF_GATEWAY, RTF_HOST, ... */
 	uint32_t		fpp_id;		/* FPP route ID */
 	int			fpp_programmed;	/* sent to CDX */
+	int			fpp_rejected;	/* CDX rejected (unknown interface) */
 	struct cmm_neigh	*neigh;		/* resolved next-hop */
 };
 

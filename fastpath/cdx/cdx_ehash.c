@@ -931,7 +931,7 @@ int insert_entry_in_classif_table(PCtEntry entry)
 	// know about (e.g. bridge0).
 	underlying_input_itf = entry->pRtEntry->underlying_input_itf;
 	if (underlying_input_itf == NULL) {
-		DPA_ERROR("%s::underlying_input_itf is NULL for port %d "
+		DPA_INFO("%s::underlying_input_itf is NULL for port %d "
 				"(input_itf=%p route_id=%u)\n",
 				__FUNCTION__, entry->inPhyPortNum,
 				entry->pRtEntry->input_itf,
@@ -1211,7 +1211,7 @@ int insert_mcast_entry_in_classif_table(struct _tCtEntry *entry,
 	// know about (e.g. bridge0).
 	underlying_input_itf = entry->pRtEntry->underlying_input_itf;
 	if (underlying_input_itf == NULL) {
-		DPA_ERROR("%s::underlying_input_itf is NULL for port %d "
+		DPA_INFO("%s::underlying_input_itf is NULL for port %d "
 				"(input_itf=%p route_id=%u)\n",
 				__FUNCTION__, entry->inPhyPortNum,
 				entry->pRtEntry->input_itf,

@@ -264,9 +264,9 @@ conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 	conn->rep_route->iif_index = resolve_iif_index(conn->orig_route);
 
 	/* Send routes to CDX (idempotent if already programmed) */
-	if (!conn->orig_route->fpp_programmed)
+	if (!conn->orig_route->fpp_programmed && !conn->orig_route->fpp_rejected)
 		cmm_fe_route_register(g, conn->orig_route);
-	if (!conn->rep_route->fpp_programmed)
+	if (!conn->rep_route->fpp_programmed && !conn->rep_route->fpp_rejected)
 		cmm_fe_route_register(g, conn->rep_route);
 
 	if (!conn->orig_route->fpp_programmed ||

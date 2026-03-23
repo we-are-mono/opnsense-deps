@@ -428,6 +428,7 @@ cmm_route_flush_all_local(void)
 			tmp = list_next(pos);
 			rt = container_of(pos, struct cmm_route, entry);
 			rt->fpp_programmed = 0;
+			rt->fpp_rejected = 0;
 			if (rt->neigh != NULL) {
 				cmm_neigh_put(rt->neigh);
 				rt->neigh = NULL;

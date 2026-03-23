@@ -184,6 +184,15 @@ cmm_fe_route_register(struct cmm_global *g, struct cmm_route *rt)
 		/* Stale entry from previous session — accept it */
 		cmm_print(CMM_LOG_DEBUG,
 		    "fe: route id=%u already in CDX, reusing", rt->fpp_id);
+	} else if (rc == FPP_ERR_UNKNOWN_INTERFACE) {
+		cmm_print(CMM_LOG_WARN,
+		    "fe: route id=%u rejected: CDX unknown interface "
+		    "in=%s out=%s",
+		    rt->fpp_id,
+		    cmd.input_device[0] ? cmd.input_device : "(empty)",
+		    cmd.output_device);
+		rt->fpp_rejected = 1;
+		return (-1);
 	} else if (rc != 0) {
 		cmm_print(CMM_LOG_WARN,
 		    "fe: route register failed: %d (id=%u)", rc, rt->fpp_id);

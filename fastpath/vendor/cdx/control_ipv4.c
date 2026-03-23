@@ -983,13 +983,17 @@ int IP_HandleIP_ROUTE_RESOLVE (U16 *p, U16 Length)
 				return ERR_UNKNOWN_INTERFACE;
 			}
 
-			if (!iif_desc && RtCmd.inputDevice[0])
-				DPA_ERROR("%s::route %u in='%s' not found\n",
+			if (!iif_desc && RtCmd.inputDevice[0]) {
+				DPA_INFO("%s::route %u in='%s' not registered\n",
 					__FUNCTION__, RtCmd.id, RtCmd.inputDevice);
-			if (!underlying_iif_desc && RtCmd.UnderlyingInputDevice[0])
-				DPA_ERROR("%s::route %u underlying_in='%s' not found\n",
+				return ERR_UNKNOWN_INTERFACE;
+			}
+			if (!underlying_iif_desc && RtCmd.UnderlyingInputDevice[0]) {
+				DPA_INFO("%s::route %u underlying_in='%s' not registered\n",
 					__FUNCTION__, RtCmd.id,
 					RtCmd.UnderlyingInputDevice);
+				return ERR_UNKNOWN_INTERFACE;
+			}
 
 			pRtEntry = L2_route_add(RtCmd.id, 0);
 
