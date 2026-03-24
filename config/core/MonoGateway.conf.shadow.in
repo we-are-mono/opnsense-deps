@@ -1,0 +1,7 @@
+MonoGateway: {
+  fingerprints: "/usr/local/etc/pkg/fingerprints/OPNsense",
+  url: "%%CORE_PACKAGESITE%%/${ABI}/%%CORE_ABI%%/mono",
+  signature_type: "fingerprints",
+  priority: 11,
+  enabled: yes
+}
