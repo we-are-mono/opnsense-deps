@@ -39,11 +39,11 @@
 
 /* --- Ring buffer -------------------------------------------------- */
 
-#define PFN_RING_SIZE		4096	/* must be power of 2 */
+#define PFN_RING_SIZE		131072	/* must be power of 2 (128K entries) */
 #define PFN_RING_MASK		(PFN_RING_SIZE - 1)
 
 struct pfn_ring {
-	struct pfn_event	events[PFN_RING_SIZE];
+	struct pfn_event	*events;	/* dynamically allocated */
 	volatile uint32_t	head;
 	volatile uint32_t	tail;
 };
@@ -69,14 +69,20 @@ ring_count(const struct pfn_ring *r)
 	return ((r->head - r->tail) & PFN_RING_MASK);
 }
 
+static uint64_t		pfn_ring_hwm;		/* forward declaration */
+
 static int
 ring_put(struct pfn_ring *r, const struct pfn_event *ev)
 {
+	uint32_t cnt;
 
 	if (ring_full(r))
 		return (ENOSPC);
 	r->events[r->head] = *ev;
 	r->head = (r->head + 1) & PFN_RING_MASK;
+	cnt = ring_count(r);
+	if (cnt > pfn_ring_hwm)
+		pfn_ring_hwm = cnt;
 	return (0);
 }
 
@@ -100,10 +106,10 @@ ring_get(struct pfn_ring *r, struct pfn_event *ev)
  * Collisions overwrite silently; worst case is a harmless
  * duplicate READY event that CMM handles idempotently.
  */
-#define PFN_NOTIFIED_SIZE	16384
+#define PFN_NOTIFIED_SIZE	131072	/* 128K entries */
 #define PFN_NOTIFIED_MASK	(PFN_NOTIFIED_SIZE - 1)
 
-static uint64_t pfn_notified[PFN_NOTIFIED_SIZE];
+static uint64_t *pfn_notified;		/* dynamically allocated */
 
 static inline int
 pfn_is_notified(uint64_t id)
@@ -260,13 +266,31 @@ pfn_update_state(struct pf_kstate *s)
 	if (!ready)
 		return;
 
-	/* One-shot: skip if already notified for this state */
+	/* Cheap lockless pre-check — harmless races just produce a
+	 * duplicate READY event that CMM handles idempotently. */
 	if (pfn_is_notified(s->id))
 		return;
-	pfn_mark_notified(s->id);
 
 	pfn_fill_event(&ev, PFN_EVENT_READY, s);
-	pfn_queue_event(&ev);
+
+	/* Mark notified ONLY after successful enqueue.  If the ring
+	 * is full, the event is dropped but the state is NOT marked —
+	 * next packet for this state will re-trigger READY. */
+	mtx_lock(&pfn_mtx);
+	if (pfn_is_notified(s->id)) {
+		mtx_unlock(&pfn_mtx);
+		return;
+	}
+	if (ring_put(&pfn_ring, &ev) == 0) {
+		pfn_mark_notified(s->id);
+		pfn_events_total++;
+		selwakeup(&pfn_rsel);
+		KNOTE_LOCKED(&pfn_rsel.si_note, 0);
+		wakeup(&pfn_ring);
+	} else {
+		pfn_events_dropped++;
+	}
+	mtx_unlock(&pfn_mtx);
 }
 
 /*
@@ -306,7 +330,7 @@ pfn_dev_open(struct cdev *dev __unused, int oflags __unused,
 	/* Reset ring on new open */
 	pfn_ring.head = 0;
 	pfn_ring.tail = 0;
-	memset(pfn_notified, 0, sizeof(pfn_notified));
+	memset(pfn_notified, 0, PFN_NOTIFIED_SIZE * sizeof(uint64_t));
 	mtx_unlock(&pfn_mtx);
 	return (0);
 }
@@ -493,6 +517,17 @@ static struct cdevsw pfn_cdevsw = {
 
 /* --- Sysctl ------------------------------------------------------- */
 
+static int
+pfn_sysctl_ring_used(SYSCTL_HANDLER_ARGS)
+{
+	uint32_t val;
+
+	mtx_lock(&pfn_mtx);
+	val = ring_count(&pfn_ring);
+	mtx_unlock(&pfn_mtx);
+	return (sysctl_handle_int(oidp, &val, 0, req));
+}
+
 static void
 pfn_sysctl_init(void)
 {
@@ -529,6 +564,16 @@ pfn_sysctl_init(void)
 	    OID_AUTO, "counter_misses", CTLFLAG_RD,
 	    &pfn_counter_misses, 0,
 	    "PF state counter update misses (state gone)");
+
+	SYSCTL_ADD_U64(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "ring_hwm", CTLFLAG_RD,
+	    &pfn_ring_hwm, 0,
+	    "Ring buffer high-water mark (events)");
+
+	SYSCTL_ADD_PROC(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "ring_used", CTLTYPE_U32 | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    NULL, 0, pfn_sysctl_ring_used, "IU",
+	    "Ring buffer current occupancy (events)");
 }
 
 static void
@@ -547,6 +592,11 @@ pfn_load(void)
 	mtx_init(&pfn_mtx, "pfnotify", NULL, MTX_DEF);
 	knlist_init_mtx(&pfn_rsel.si_note, &pfn_mtx);
 
+	pfn_ring.events = malloc(PFN_RING_SIZE * sizeof(struct pfn_event),
+	    M_DEVBUF, M_WAITOK | M_ZERO);
+	pfn_notified = malloc(PFN_NOTIFIED_SIZE * sizeof(uint64_t),
+	    M_DEVBUF, M_WAITOK | M_ZERO);
+
 	pfn_ring.head = 0;
 	pfn_ring.tail = 0;
 	pfn_open = 0;
@@ -554,7 +604,7 @@ pfn_load(void)
 	pfn_events_dropped = 0;
 	pfn_counter_updates = 0;
 	pfn_counter_misses = 0;
-	memset(pfn_notified, 0, sizeof(pfn_notified));
+	pfn_ring_hwm = 0;
 
 	/* Create /dev/pfnotify */
 	pfn_cdev = make_dev(&pfn_cdevsw, 0, UID_ROOT, GID_WHEEL, 0600,
@@ -599,6 +649,11 @@ pfn_unload(void)
 	knlist_clear(&pfn_rsel.si_note, 0);
 	knlist_destroy(&pfn_rsel.si_note);
 	mtx_destroy(&pfn_mtx);
+
+	free(pfn_ring.events, M_DEVBUF);
+	free(pfn_notified, M_DEVBUF);
+	pfn_ring.events = NULL;
+	pfn_notified = NULL;
 
 	printf("pf_notify: unloaded\n");
 }

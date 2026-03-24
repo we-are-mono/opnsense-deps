@@ -16,13 +16,13 @@ bypassing the FreeBSD networking stack.
  │  │ offload │    │ PCD     │    │ fan      │    │ query/ctrl │  │
  │  │ manager │    │ setup   │    │ control  │    │ tool       │  │
  │  └────┬────┘    └────┬────┘    └──────────┘    └─────┬──────┘  │
- │       │FCI           │chardev                        │socket   │
+ │       │FCI      /dev/│fman + /dev/cdx_ctrl           │socket   │
  │ ══════╪══════════════╪═══════════════════════════════╪═══════  │
  │  KERNEL              │                               │         │
  │       │         ┌────┴────┐                          │         │
- │  ┌────┴────┐    │  fmc    │                     ┌────┴────┐    │
+ │  ┌────┴────┐    │  fman   │                     ┌────┴────┐    │
  │  │ fci.ko  │    │ chardev │                     │  cmm    │    │
- │  │         │    │ (fman)  │                     │ ctrl    │    │
+ │  │         │    │         │                     │ ctrl    │    │
  │  │ cmd/evt │    └────┬────┘                     │ socket  │    │
  │  │ channel │         │FM ioctl                  └─────────┘    │
  │  └────┬────┘    ┌────┴────────────────────────┐                │
@@ -35,9 +35,12 @@ bypassing the FreeBSD networking stack.
  │  └────┬────┘    │  .ko    │  │    .ko     │  │  (crypto)   │   │
  │       │         └────┬────┘  └─────┬──────┘  └─────────────┘   │
  │       │              │             │                           │
+ │ ══════╪══════════════╪═════════════╪══════════════════════════ │
+ │  HARDWARE            │             │                           │
+ │       │              │             │                           │
  │  ┌────┴──────────────┴─────────────┴──────────────────────┐    │
  │  │                  FMan Hardware                         │    │
- │  │   Parser -> KeyGen -> CC/Hash Tables --> Policer/EN.   │    │
+ │  │   PCD: Parser -> Classifier (KeyGen/CC) -> Distributor │    │
  │  └────────────────────────────────────────────────────────┘    │
  └────────────────────────────────────────────────────────────────┘
 ```
@@ -84,8 +87,10 @@ Hooks into the PF firewall to push state change events to userspace:
 - `PFN_EVENT_READY` — state became offload-eligible (TCP ESTABLISHED)
 - `PFN_EVENT_DELETE` — state removed by PF
 
-Exposes `/dev/pfnotify` (read-only, non-blocking). Without this module,
-CMM falls back to polling the PF state table every 1s.
+Exposes `/dev/pfnotify` (read-write, non-blocking). Required by CMM —
+CMM will not start without this module loaded. Uses a 128K-entry ring
+buffer with one-shot READY semantics: dropped events re-fire on the
+next packet, eliminating the need for polling fallback.
 
 Source: `fastpath/pf_notify/`
 
@@ -117,7 +122,7 @@ next-hop neighbors, and programs CDX with offload entries.
 2. CMM sends route + conntrack to CDX via FCI → flow in hardware
 3. Packets forwarded at line rate by FMan, bypassing stack
 4. CDX timer expires or TCP FIN → FCI event → CMM clears offload flag
-5. If PF state still alive → next poll re-offloads automatically
+5. If PF state still alive → maintenance timer (30s) re-offloads
 
 Source: `fastpath/cmm/`
 
@@ -132,7 +137,8 @@ Source: `fastpath/cmmctl/`
 
 Loads FMan Parser/Classification/Distribution configuration from
 XML files via the FMan chardev. Sets up the KeyGen hash schemes
-and CC tree that CDX later patches with per-flow entries.
+and CC tree, then hands table handles to CDX via `/dev/cdx_ctrl` ioctl
+so CDX knows where to insert per-flow entries at runtime.
 
 Depends on: fmlib (FMan API), fmc (XML parser/compiler)
 
@@ -218,3 +224,4 @@ Wire ──► FMan RX Port
 | CMM ← bridge | /dev/autobridge | L2 flow learning events |
 | cmmctl → CMM | Unix socket | Query/control commands |
 | dpa_app → FMan | /dev/fman chardev | PCD configuration (XML → hardware) |
+| dpa_app → CDX | /dev/cdx_ctrl ioctl | Hand over table handles after PCD setup |

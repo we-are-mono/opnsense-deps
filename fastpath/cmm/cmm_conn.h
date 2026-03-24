@@ -55,8 +55,6 @@ struct cmm_conn {
 	struct cmm_route	*orig_route;
 	struct cmm_route	*rep_route;
 
-	/* Epoch tracking for garbage collection */
-	uint32_t		last_seen_epoch;
 };
 
 /* Initialize connection table */
@@ -64,17 +62,16 @@ int cmm_conn_init(void);
 void cmm_conn_fini(struct cmm_global *g);
 
 /*
- * Poll PF state table.  Called periodically from the event loop.
- * Detects new connections, expired connections, and triggers
- * offload/deregister as needed.
- */
-void cmm_conn_poll(struct cmm_global *g);
-
-/*
  * Handle push-based PF state events from /dev/pfnotify.
  * Called from the event loop when the pfnotify fd is readable.
  */
 void cmm_conn_event(struct cmm_global *g);
+
+/*
+ * Periodic maintenance: retry offload for pending connections,
+ * garbage-collect unreferenced routes, log stats.
+ */
+void cmm_conn_maintenance(struct cmm_global *g);
 
 /* Remove all offloaded connections (e.g. on shutdown) */
 void cmm_conn_deregister_all(struct cmm_global *g);
@@ -99,7 +96,8 @@ int cmm_conn_fci_event(unsigned short fcode, unsigned short len,
 /*
  * Full offload state reset: deregister all connections from CDX,
  * flush routes and neighbors.  Connections stay in the table and
- * re-offload on the next poll cycle.  Used on interface reassignment.
+ * re-offload on the next maintenance cycle.  Used on interface
+ * reassignment.
  */
 void cmm_reset_offload_state(struct cmm_global *g);
 

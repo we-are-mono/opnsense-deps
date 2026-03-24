@@ -8,8 +8,8 @@ architecture — kqueue event loop, push-based PF state events via
 `pf_notify.ko`, PF_ROUTE/PF_KEY sockets — is sound.
 
 The FreeBSD port currently implements the **core path** only: conntrack
-polling, route/neighbor resolution, FPP flow programming, and IPsec SA
-tracking. The Linux CMM has 20 additional feature modules not yet
+event handling, route/neighbor resolution, FPP flow programming, and
+IPsec SA tracking. The Linux CMM has 20 additional feature modules not yet
 ported:
 
 ---
@@ -128,7 +128,7 @@ pattern. For example, adding Statistics (#5):
   (accepted, no HW ops). (3) Deny rules — CMM-side config-file-driven
   filtering (`/usr/local/etc/cmm_deny.conf`). Rules match on proto, src/dst
   address with CIDR prefix, src/dst port, and interface name. Checked in
-  `cmm_conn_poll()` before offload. No asymmetric fast-forward (Linux
+  `pfn_event_eligible()` before offload. No asymmetric fast-forward (Linux
   feature, not needed on GDK). To add deny-rule fields: extend
   `struct cmm_deny_rule` in `cmm_deny.h` and the parser/matcher in
   `cmm_deny.c`.
@@ -254,10 +254,13 @@ indexed by state ID prevents per-packet READY flooding.  The UPDATE hook
 checks readiness (TCP ESTABLISHED / UDP bidirectional) and the one-shot
 array before queuing.  Collisions cause a harmless re-notification.
 
-**Hybrid approach:** CMM uses push events as the fast path and keeps a
-30-second reconciliation poll (unchanged `cmm_conn_poll()`) to catch ring
-overflow drops or module load races.  If `pf_notify.ko` is not loaded,
-CMM falls back to 100 ms polling automatically.
+**Push-only approach:** CMM requires `pf_notify.ko` and uses push events
+exclusively.  The ring buffer is 128K entries (dynamically allocated) and
+READY events use a mark-after-enqueue design: if the ring is full, the
+event is dropped but NOT marked as notified — the next packet for that
+state re-triggers READY automatically.  A 30-second maintenance timer
+retries offload for connections that failed initial offload (route/neighbor
+not yet resolved) and garbage-collects stale routes.
 
 **PF kernel changes** (~20 lines across 3 files):
 - `sys/net/pfvar.h` — 3 new VNET hook typedefs + declarations
@@ -309,9 +312,9 @@ is registered in the main kqueue alongside route socket, FCI, PF_KEY,
 control socket, and auto_bridge fds.  A udata tag (`(void *)4`)
 distinguishes pfnotify events in the dispatch loop.
 
-The reconciliation timer period is mode-dependent:
-- **Push mode** (`pfnotify_fd >= 0`): 30 seconds (`CMM_RECONCILE_MS`)
-- **Poll mode** (fallback): 100 ms (`poll_ms`, configurable via `-p`)
+Two timers in the event loop:
+- **Stats sync** (ident 5): 5 seconds (`CMM_STATS_SYNC_MS`) — syncs CDX flow counters to PF state table
+- **Maintenance** (ident 6): 30 seconds (`CMM_MAINT_MS`) — retries pending offloads, route GC, stats log
 
 On `EVFILT_READ` for pfnotify, CMM reads events in a loop and dispatches:
 - `PFN_EVENT_READY` → attempt offload (same path as poll-discovered

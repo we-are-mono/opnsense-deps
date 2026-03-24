@@ -24,7 +24,6 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
-#define COMPAT_FREEBSD14
 #include <net/pfvar.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -329,22 +328,6 @@ cmm_deny_check_tuple(sa_family_t af, uint8_t proto,
 	}
 
 	return (0);
-}
-
-int
-cmm_deny_check(const struct pf_state_export *pfs)
-{
-	const struct pf_state_key_export *sk;
-	int sidx, didx;
-
-	sk = &pfs->key[PF_SK_STACK];
-	sidx = (pfs->direction == PF_IN) ? 0 : 1;
-	didx = 1 - sidx;
-
-	return (cmm_deny_check_tuple(pfs->af, pfs->proto,
-	    &sk->addr[sidx], &sk->addr[didx],
-	    sk->port[sidx], sk->port[didx],
-	    pfs->ifname));
 }
 
 int

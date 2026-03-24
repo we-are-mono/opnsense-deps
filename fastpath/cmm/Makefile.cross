@@ -20,7 +20,7 @@ FCI_DIR=	${SRCDIR}/fci_lib
 FCI_HDR=	${SRCDIR}/fci
 
 CMM_SRCS=	cmm.c cmm_conn.c cmm_route.c cmm_neigh.c \
-		cmm_itf.c cmm_rtsock.c cmm_fe.c cmm_offload.c \
+		cmm_itf.c cmm_rtsock.c cmm_fe.c \
 		cmm_lagg.c cmm_vlan.c cmm_ipsec.c cmm_tunnel.c cmm_deny.c \
 		cmm_socket.c cmm_bridge.c cmm_ctrl.c cmm_l2tp.c \
 		cmm_wifi.c cmm_pppoe.c cmm_mcast.c

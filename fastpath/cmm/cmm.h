@@ -38,9 +38,8 @@
 #define CMM_LOG_DEBUG	3
 #define CMM_LOG_TRACE	4
 
-#define CMM_DEFAULT_POLL_MS	1000	/* PF state poll interval */
-#define CMM_RECONCILE_MS	30000	/* reconciliation interval (push mode) */
 #define CMM_STATS_SYNC_MS	5000	/* CDX flow counter sync interval */
+#define CMM_MAINT_MS		30000	/* maintenance timer (retry + route GC) */
 #define CMM_PID_FILE		"/var/run/cmm.pid"
 
 struct cmm_global {
@@ -49,7 +48,6 @@ struct cmm_global {
 	FCI_CLIENT	*fci_catch;	/* async event handle */
 
 	/* OS file descriptors */
-	int		pf_fd;		/* /dev/pf for state queries */
 	int		rtsock_fd;	/* PF_ROUTE socket (monitoring) */
 	int		rtsock_query_fd;/* PF_ROUTE socket (RTM_GET queries) */
 	int		kq;		/* kqueue fd */
@@ -61,7 +59,6 @@ struct cmm_global {
 
 	/* Configuration */
 	int		debug_level;
-	int		poll_ms;	/* PF state poll interval */
 	int		foreground;	/* don't daemonize */
 
 	/* Runtime */
@@ -69,9 +66,6 @@ struct cmm_global {
 
 	/* Route ID counter */
 	uint32_t	next_route_id;
-
-	/* PF state epoch (incremented each poll) */
-	uint32_t	epoch;
 
 	/* Single-threaded: all processing in kqueue event loop */
 };

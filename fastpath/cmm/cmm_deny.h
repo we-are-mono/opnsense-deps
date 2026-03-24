@@ -54,14 +54,6 @@ int	cmm_deny_check_tuple(sa_family_t af, uint8_t proto,
 	    const void *saddr, const void *daddr,
 	    uint16_t sport, uint16_t dport, const char *ifname);
 
-/*
- * Check if a PF state should be denied offload.
- * Wrapper around cmm_deny_check_tuple for pf_state_export.
- * Returns 1 if denied (do not offload), 0 if allowed.
- */
-struct pf_state_export;
-int	cmm_deny_check(const struct pf_state_export *pfs);
-
 /* Return the number of loaded deny rules. */
 int	cmm_deny_count(void);
 

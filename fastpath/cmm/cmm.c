@@ -80,12 +80,11 @@ static void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: cmm [-f] [-d level] [-p poll_ms] [-D deny_conf]\n"
+	    "usage: cmm [-f] [-d level] [-D deny_conf]\n"
 	    "  -f          run in foreground\n"
 	    "  -d level    debug level (0=err, 1=warn, 2=info, 3=debug, 4=trace)\n"
-	    "  -p poll_ms  PF state poll interval in ms (default %d)\n"
 	    "  -D path     deny-rule config file (default %s)\n",
-	    CMM_DEFAULT_POLL_MS, CMM_DENY_CONF);
+	    CMM_DENY_CONF);
 	exit(1);
 }
 
@@ -100,10 +99,8 @@ main(int argc, char *argv[])
 
 	/* Defaults */
 	g->debug_level = CMM_LOG_INFO;
-	g->poll_ms = CMM_DEFAULT_POLL_MS;
 	g->foreground = 0;
 	g->running = 1;
-	g->pf_fd = -1;
 	g->rtsock_fd = -1;
 	g->rtsock_query_fd = -1;
 	g->kq = -1;
@@ -112,7 +109,7 @@ main(int argc, char *argv[])
 	g->autobridge_fd = -1;
 	g->pfnotify_fd = -1;
 
-	while ((ch = getopt(argc, argv, "fd:p:D:")) != -1) {
+	while ((ch = getopt(argc, argv, "fd:D:")) != -1) {
 		switch (ch) {
 		case 'f':
 			g->foreground = 1;
@@ -124,11 +121,6 @@ main(int argc, char *argv[])
 			if (g->debug_level > CMM_LOG_TRACE)
 				g->debug_level = CMM_LOG_TRACE;
 			break;
-		case 'p':
-			g->poll_ms = atoi(optarg);
-			if (g->poll_ms < 10)
-				g->poll_ms = 10;
-			break;
 		case 'D':
 			deny_conf = optarg;
 			break;
@@ -137,8 +129,7 @@ main(int argc, char *argv[])
 		}
 	}
 
-	cmm_print(CMM_LOG_INFO, "CMM starting (debug=%d poll=%dms)",
-	    g->debug_level, g->poll_ms);
+	cmm_print(CMM_LOG_INFO, "CMM starting (debug=%d)", g->debug_level);
 
 	/* Acquire PID file lock — prevents duplicate instances */
 	{
@@ -251,15 +242,6 @@ main(int argc, char *argv[])
 			    "CDX flow statistics enable failed");
 	}
 
-	/* Open /dev/pf */
-	g->pf_fd = open("/dev/pf", O_RDONLY);
-	if (g->pf_fd < 0) {
-		cmm_print(CMM_LOG_ERR, "open /dev/pf: %s — is PF enabled?",
-		    strerror(errno));
-		goto out;
-	}
-	cmm_print(CMM_LOG_INFO, "/dev/pf opened");
-
 	/* Warn if IP forwarding is not enabled */
 	{
 		int fwd = 0;
@@ -331,20 +313,19 @@ main(int argc, char *argv[])
 		cmm_print(CMM_LOG_WARN,
 		    "PF_KEY unavailable — IPsec offload disabled");
 
-	/* Open /dev/pfnotify for push-based state events */
+	/* Open /dev/pfnotify — required for PF state events */
 	{
 		int fd;
 
 		fd = open(PFN_DEV_PATH, O_RDWR | O_NONBLOCK);
-		if (fd >= 0) {
-			g->pfnotify_fd = fd;
-			cmm_print(CMM_LOG_INFO,
-			    "pfnotify: push mode (fd=%d)", fd);
-		} else {
-			cmm_print(CMM_LOG_WARN,
-			    "pfnotify: %s unavailable (%s) — polling mode",
+		if (fd < 0) {
+			cmm_print(CMM_LOG_ERR,
+			    "pfnotify: %s: %s — is pf_notify.ko loaded?",
 			    PFN_DEV_PATH, strerror(errno));
+			goto out;
 		}
+		g->pfnotify_fd = fd;
+		cmm_print(CMM_LOG_INFO, "pfnotify: fd=%d", fd);
 	}
 
 	/* Register FCI event dispatcher for CDX async notifications */
@@ -399,32 +380,44 @@ main(int argc, char *argv[])
 	}
 
 	/* pf_notify device: PF state change events */
-	if (g->pfnotify_fd >= 0) {
-		EV_SET(&kev[nev], g->pfnotify_fd, EVFILT_READ,
-		    EV_ADD, 0, 0, (void *)(uintptr_t)4);
-		nev++;
-	}
-
-	/*
-	 * PF state polling timer.
-	 * In push mode: 30s reconciliation to catch ring overflow drops.
-	 * In poll mode: fast polling (default 100ms) as primary path.
-	 */
-	{
-		int timer_ms;
-
-		timer_ms = (g->pfnotify_fd >= 0) ?
-		    CMM_RECONCILE_MS : g->poll_ms;
-		EV_SET(&kev[nev], 1, EVFILT_TIMER, EV_ADD,
-		    NOTE_MSECONDS, timer_ms, NULL);
-		nev++;
-	}
+	EV_SET(&kev[nev], g->pfnotify_fd, EVFILT_READ,
+	    EV_ADD, 0, 0, (void *)(uintptr_t)4);
+	nev++;
 
 	/* CDX flow counter sync timer (5s) */
-	if (g->pfnotify_fd >= 0) {
-		EV_SET(&kev[nev], 5, EVFILT_TIMER, EV_ADD,
-		    NOTE_MSECONDS, CMM_STATS_SYNC_MS, NULL);
-		nev++;
+	EV_SET(&kev[nev], 5, EVFILT_TIMER, EV_ADD,
+	    NOTE_MSECONDS, CMM_STATS_SYNC_MS, NULL);
+	nev++;
+
+	/* Maintenance timer: retry pending offloads + route GC (30s) */
+	EV_SET(&kev[nev], 6, EVFILT_TIMER, EV_ADD,
+	    NOTE_MSECONDS, CMM_MAINT_MS, NULL);
+	nev++;
+
+	cmm_print(CMM_LOG_DEBUG,
+	    "fds: rtsock=%d fci=%d pfkey=%d ctrl=%d autobridge=%d pfnotify=%d",
+	    g->rtsock_fd,
+	    g->fci_catch ? fci_fd(g->fci_catch) : -1,
+	    g->pfkey_fd, g->ctrl_listen_fd,
+	    g->autobridge_fd, g->pfnotify_fd);
+
+	/* Validate: drop any EVFILT_READ with invalid fd */
+	{
+		int j, dst;
+		for (j = 0, dst = 0; j < nev; j++) {
+			if (kev[j].filter == EVFILT_READ &&
+			    (int)(uintptr_t)kev[j].ident < 0) {
+				cmm_print(CMM_LOG_WARN,
+				    "kevent[%d]: skipping bad fd "
+				    "(ident=%ld)", j,
+				    (long)(intptr_t)kev[j].ident);
+				continue;
+			}
+			if (dst != j)
+				kev[dst] = kev[j];
+			dst++;
+		}
+		nev = dst;
 	}
 
 	if (kevent(g->kq, kev, nev, NULL, 0, NULL) < 0) {
@@ -452,8 +445,8 @@ main(int argc, char *argv[])
 			if (events[i].filter == EVFILT_TIMER) {
 				if (events[i].ident == 5)
 					cmm_conn_stats_sync(g);
-				else
-					cmm_conn_poll(g);
+				else if (events[i].ident == 6)
+					cmm_conn_maintenance(g);
 			} else if (events[i].udata ==
 			    (void *)(uintptr_t)1) {
 				/* Control socket: new connection */
@@ -519,8 +512,6 @@ out:
 		close(g->rtsock_query_fd);
 	if (g->pfnotify_fd >= 0)
 		close(g->pfnotify_fd);
-	if (g->pf_fd >= 0)
-		close(g->pf_fd);
 	if (g->fci_catch != NULL)
 		fci_close(g->fci_catch);
 	if (g->fci_handle != NULL)

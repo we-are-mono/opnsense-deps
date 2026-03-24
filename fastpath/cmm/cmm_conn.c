@@ -1,9 +1,8 @@
 /*
- * cmm_conn.c — PF state table polling and connection tracking
+ * cmm_conn.c — PF state event handling and connection tracking
  *
- * Maintains a local connection table driven by either:
- *   1. Push-based events from /dev/pfnotify (pf_notify.ko)
- *   2. Periodic polling via DIOCGETSTATESV2 (fallback/reconciliation)
+ * Maintains a local connection table driven by push-based events
+ * from /dev/pfnotify (pf_notify.ko).
  *
  * New connections are checked for offload eligibility and
  * programmed into CDX.  Expired connections are removed from CDX.
@@ -15,7 +14,6 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#define COMPAT_FREEBSD14	/* DIOCGETSTATESV2 */
 #include <net/pfvar.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -30,7 +28,6 @@
 #include "cmm_neigh.h"
 #include "cmm_itf.h"
 #include "cmm_fe.h"
-#include "cmm_offload.h"
 #include "cmm_bridge.h"
 #include "cmm_deny.h"
 #include "pf_notify.h"
@@ -39,7 +36,10 @@
 
 #include <netinet/tcp_fsm.h>
 
-#define CMM_MAX_STATE_BUF	(16 * 1024 * 1024)	/* 16 MB cap */
+#ifndef PF_IN
+#define PF_IN	1
+#endif
+
 #define CMM_CONN_MAX		65536
 
 static struct list_head conn_hash[CONN_HASH_SIZE];
@@ -293,94 +293,6 @@ conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 	}
 }
 
-/*
- * Extract connection 5-tuples from a PF state export entry.
- *
- * PF state keys:
- *   key[PF_SK_WIRE]  = wire-side addresses (post-NAT for SNAT/PF_OUT)
- *   key[PF_SK_STACK] = stack-side addresses (pre-NAT original endpoints)
- *
- * PF address indexing depends on direction:
- *   PF_IN:  addr[0] = src, addr[1] = dst
- *   PF_OUT: addr[0] = dst, addr[1] = src
- *
- * For non-NAT: wire == stack, direction is PF_IN.
- * For NAT:     wire has NAT'd addresses, stack has original endpoints.
- *              PF creates two states; we only use the PF_OUT state
- *              (identified by wire != stack) which has correct info.
- *
- * CDX needs:
- *   Original direction: addresses as they enter the INTERNAL interface
- *     (pre-NAT) — use STACK key (real endpoints)
- *   Reply direction: addresses as they enter the EXTERNAL interface
- *     (post-NAT reply) — use WIRE key reversed
- */
-static void
-conn_extract_tuples(struct cmm_conn *conn, const struct pf_state_export *pfs)
-{
-	const struct pf_state_key_export *wire, *stack;
-	int alen, sidx, didx;
-
-	wire = &pfs->key[PF_SK_WIRE];
-	stack = &pfs->key[PF_SK_STACK];
-
-	conn->af = pfs->af;
-	conn->proto = pfs->proto;
-	alen = (pfs->af == AF_INET) ? 4 : 16;
-
-	/*
-	 * PF stores addresses at direction-dependent indices:
-	 *   PF_IN(1):  sidx=0, didx=1  (addr[0]=src, addr[1]=dst)
-	 *   PF_OUT(2): sidx=1, didx=0  (addr[0]=dst, addr[1]=src)
-	 */
-	sidx = (pfs->direction == PF_IN) ? 0 : 1;
-	didx = (pfs->direction == PF_IN) ? 1 : 0;
-
-	/* Diagnostic: dump wire and stack keys */
-	if (pfs->af == AF_INET) {
-		char ws[INET_ADDRSTRLEN], wd[INET_ADDRSTRLEN];
-		char ss[INET_ADDRSTRLEN], sd[INET_ADDRSTRLEN];
-
-		inet_ntop(AF_INET, &wire->addr[sidx].v4, ws, sizeof(ws));
-		inet_ntop(AF_INET, &wire->addr[didx].v4, wd, sizeof(wd));
-		inet_ntop(AF_INET, &stack->addr[sidx].v4, ss, sizeof(ss));
-		inet_ntop(AF_INET, &stack->addr[didx].v4, sd, sizeof(sd));
-		cmm_print(CMM_LOG_DEBUG,
-		    "conn: pf dir=%u "
-		    "wire=[%s:%u -> %s:%u] "
-		    "stack=[%s:%u -> %s:%u] %s",
-		    pfs->direction,
-		    ws, ntohs(wire->port[sidx]),
-		    wd, ntohs(wire->port[didx]),
-		    ss, ntohs(stack->port[sidx]),
-		    sd, ntohs(stack->port[didx]),
-		    (memcmp(wire, stack, sizeof(*wire)) == 0) ?
-		    "SAME" : "DIFFER");
-	}
-
-	/*
-	 * Original direction: use STACK key (pre-NAT real endpoints).
-	 * These are the addresses on the internal wire where the
-	 * initiating packet enters the gateway.
-	 */
-	memcpy(conn->orig_saddr, &stack->addr[sidx], alen);
-	memcpy(conn->orig_daddr, &stack->addr[didx], alen);
-	conn->orig_sport = stack->port[sidx];
-	conn->orig_dport = stack->port[didx];
-
-	/*
-	 * Reply direction: use WIRE key, reversed.
-	 * These are the addresses on the external wire where the
-	 * reply packet enters the gateway.  For NAT, the wire key
-	 * has the NAT'd source address which is what the remote
-	 * server replies to.
-	 */
-	memcpy(conn->rep_saddr, &wire->addr[didx], alen);
-	memcpy(conn->rep_daddr, &wire->addr[sidx], alen);
-	conn->rep_sport = wire->port[didx];
-	conn->rep_dport = wire->port[sidx];
-}
-
 int
 cmm_conn_init(void)
 {
@@ -583,9 +495,6 @@ pfn_extract_tuples(struct cmm_conn *conn, const struct pfn_event *ev)
 
 /*
  * Check basic offload eligibility from pfn_event fields.
- * Mirrors cmm_offload_eligible() in cmm_offload.c but reads from
- * pfn_event instead of pf_state_export.  Changes to eligibility
- * criteria must be applied to BOTH functions.
  */
 static int
 pfn_event_eligible(const struct pfn_event *ev)
@@ -693,8 +602,6 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 	conn = conn_find_5tuple(af, proto, osaddr, odaddr, osport, odport);
 	if (conn != NULL) {
 		/* Existing connection — handle NAT upgrade */
-		conn->last_seen_epoch = g->epoch;
-
 		if (is_nat && !(conn->flags & CONN_F_HAS_NAT)) {
 			cmm_print(CMM_LOG_INFO,
 			    "conn: NAT upgrade from push event");
@@ -748,7 +655,6 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 	conn->pf_creatorid = ev->creatorid;
 	conn->pf_direction = ev->direction;
 	strlcpy(conn->ifname, ev->ifname, sizeof(conn->ifname));
-	conn->last_seen_epoch = g->epoch;
 	conn->hash_entry.next = NULL;
 	conn->hash_entry.prev = NULL;
 
@@ -851,254 +757,40 @@ cmm_conn_event(struct cmm_global *g)
 	}
 }
 
+/*
+ * Periodic maintenance: retry offload for connections that are
+ * tracked but not yet offloaded (e.g., after interface reassignment
+ * or route change), garbage-collect unreferenced routes, and log stats.
+ */
 void
-cmm_conn_poll(struct cmm_global *g)
+cmm_conn_maintenance(struct cmm_global *g)
 {
-	struct pfioc_states_v2 ps;
-	struct pf_state_export *states, *pfs;
-	int count, i;
-	uint32_t epoch;
+	struct cmm_conn *conn;
+	struct list_head *pos;
+	int i;
+	unsigned int retried = 0;
 
-	/* Increment epoch for garbage collection; skip 0 on wrap */
-	epoch = ++g->epoch;
-	if (epoch == 0)
-		epoch = ++g->epoch;
-
-	/* First pass: get required buffer size */
-	memset(&ps, 0, sizeof(ps));
-	ps.ps_req_version = PF_STATE_VERSION;
-	ps.ps_len = 0;
-
-	if (ioctl(g->pf_fd, DIOCGETSTATESV2, &ps) < 0) {
-		cmm_print(CMM_LOG_WARN, "conn: DIOCGETSTATESV2 size: %s",
-		    strerror(errno));
-		return;
-	}
-
-	if (ps.ps_len == 0) {
-		/* No states — sweep expired connections */
-		goto sweep;
-	}
-
-	if (ps.ps_len > CMM_MAX_STATE_BUF) {
-		cmm_print(CMM_LOG_WARN,
-		    "conn: state buffer %zu bytes exceeds %d MB cap",
-		    (size_t)ps.ps_len, CMM_MAX_STATE_BUF / (1024 * 1024));
-		goto sweep;
-	}
-
-	/* Allocate and fetch */
-	states = malloc(ps.ps_len);
-	if (states == NULL) {
-		cmm_print(CMM_LOG_ERR, "conn: malloc %d bytes failed",
-		    ps.ps_len);
-		return;
-	}
-
-	ps.ps_buf = states;
-	if (ioctl(g->pf_fd, DIOCGETSTATESV2, &ps) < 0) {
-		cmm_print(CMM_LOG_WARN, "conn: DIOCGETSTATESV2 fetch: %s",
-		    strerror(errno));
-		free(states);
-		return;
-	}
-
-	count = ps.ps_len / sizeof(struct pf_state_export);
-	cmm_print(CMM_LOG_TRACE, "conn: polled %d PF states", count);
-
-	/*
-	 * Process each state.
-	 *
-	 * PF creates two states per NAT connection: PF_IN (wire==stack,
-	 * no NAT info) and PF_OUT (wire!=stack, has post-NAT addresses).
-	 * Both share the same original 5-tuple (from the stack key), so
-	 * we hash by original 5-tuple to merge them into one conn entry.
-	 *
-	 * When the PF_OUT state arrives for an existing conn created by
-	 * PF_IN, we upgrade the reply tuples with the correct post-NAT
-	 * addresses and re-offload.
-	 */
-	for (i = 0; i < count; i++) {
-		struct cmm_conn *conn;
-		const struct pf_state_key_export *wire, *stack;
-		int sidx, didx, alen, is_nat;
-		uint8_t osaddr[16], odaddr[16];
-		uint16_t osport, odport;
-
-		pfs = &states[i];
-
-		/* Check offload eligibility */
-		if (!cmm_offload_eligible(pfs))
-			continue;
-
-		/* Check deny rules */
-		if (cmm_deny_check(pfs))
-			continue;
-
-		wire = &pfs->key[PF_SK_WIRE];
-		stack = &pfs->key[PF_SK_STACK];
-		alen = (pfs->af == AF_INET) ? 4 : 16;
-
-		sidx = (pfs->direction == PF_IN) ? 0 : 1;
-		didx = (pfs->direction == PF_IN) ? 1 : 0;
-		is_nat = memcmp(wire, stack, sizeof(*wire)) != 0;
-
-		/* Extract original 5-tuple from stack key */
-		memset(osaddr, 0, sizeof(osaddr));
-		memset(odaddr, 0, sizeof(odaddr));
-		memcpy(osaddr, &stack->addr[sidx], alen);
-		memcpy(odaddr, &stack->addr[didx], alen);
-		osport = stack->port[sidx];
-		odport = stack->port[didx];
-
-		/* Look up by original 5-tuple */
-		conn = conn_find_5tuple(pfs->af, pfs->proto,
-		    osaddr, odaddr, osport, odport);
-		if (conn != NULL) {
-			conn->last_seen_epoch = epoch;
-
-			/*
-			 * NAT upgrade: PF_OUT state (wire != stack) has
-			 * the correct post-NAT reply addresses.  If this
-			 * conn was created from the PF_IN state (which
-			 * has wire==stack, no NAT info), upgrade it.
-			 */
-			if (is_nat && !(conn->flags & CONN_F_HAS_NAT)) {
-				cmm_print(CMM_LOG_INFO,
-				    "conn: NAT upgrade from PF_OUT");
-
-				/* Deregister old CDX entry */
-				if (conn->flags & CONN_F_OFFLOADED) {
-					if (conn->af == AF_INET)
-						cmm_fe_ct4_deregister(g, conn);
-					else
-						cmm_fe_ct6_deregister(g, conn);
-					conn->flags &= ~CONN_F_OFFLOADED;
-					if (conn_offloaded > 0)
-						conn_offloaded--;
-				}
-
-				/* Update reply tuples from wire key */
-				memcpy(conn->rep_saddr,
-				    &wire->addr[didx], alen);
-				memcpy(conn->rep_daddr,
-				    &wire->addr[sidx], alen);
-				conn->rep_sport = wire->port[didx];
-				conn->rep_dport = wire->port[sidx];
-
-				/* Clear reply route — needs new lookup */
-				if (conn->rep_route != NULL) {
-					cmm_route_put(conn->rep_route);
-					conn->rep_route = NULL;
-				}
-
-				/* Save NAT companion PF state ID */
-				conn->pf_id_nat = pfs->id;
-				conn->pf_creatorid_nat = pfs->creatorid;
-				conn->pf_has_nat_id = 1;
-
-				conn->flags |= CONN_F_HAS_NAT;
-
-				if (pfs->af == AF_INET) {
-					char rs[INET_ADDRSTRLEN];
-					char rd[INET_ADDRSTRLEN];
-
-					inet_ntop(AF_INET, conn->rep_saddr,
-					    rs, sizeof(rs));
-					inet_ntop(AF_INET, conn->rep_daddr,
-					    rd, sizeof(rd));
-					cmm_print(CMM_LOG_INFO,
-					    "conn: NAT reply now "
-					    "%s:%u -> %s:%u",
-					    rs, ntohs(conn->rep_sport),
-					    rd, ntohs(conn->rep_dport));
-				}
-			}
-
-			/* Retry offload if not yet done */
-			if (!(conn->flags & CONN_F_OFFLOADED))
-				conn_try_offload(g, conn);
-			continue;
-		}
-
-		/* New connection — create entry */
-		if (conn_count >= CMM_CONN_MAX) {
-			cmm_print(CMM_LOG_DEBUG,
-			    "conn: limit reached (%u)", conn_count);
-			continue;
-		}
-		conn = calloc(1, sizeof(*conn));
-		if (conn == NULL)
-			continue;
-
-		conn_extract_tuples(conn, pfs);
-		conn->pf_id = pfs->id;
-		conn->pf_creatorid = pfs->creatorid;
-		conn->pf_direction = pfs->direction;
-		strlcpy(conn->ifname, pfs->ifname, sizeof(conn->ifname));
-		conn->last_seen_epoch = epoch;
-		conn->hash_entry.next = NULL;
-		conn->hash_entry.prev = NULL;
-
-		if (is_nat)
-			conn->flags |= CONN_F_HAS_NAT;
-
-		/* Insert into hash table by original 5-tuple */
-		{
-			unsigned int h;
-			h = conn_hash_5tuple(conn->af, conn->proto,
-			    conn->orig_saddr, conn->orig_daddr,
-			    conn->orig_sport, conn->orig_dport);
-			list_add(&conn_hash[h], &conn->hash_entry);
-			conn_count++;
-		}
-
-		/* Try to offload */
-		if (conn_try_offload(g, conn) < 0) {
-			cmm_print(CMM_LOG_DEBUG,
-			    "conn: offload deferred (route/neigh pending)");
-		}
-	}
-
-	free(states);
-
-sweep:
-	/* Sweep: remove connections not seen in this epoch */
-	{
-		struct cmm_conn *conn;
-		struct list_head *pos, *tmp;
-
-		for (i = 0; i < CONN_HASH_SIZE; i++) {
-			pos = list_first(&conn_hash[i]);
-			while (pos != &conn_hash[i]) {
-				tmp = list_next(pos);
-				conn = container_of(pos, struct cmm_conn,
-				    hash_entry);
-				if (conn->last_seen_epoch != epoch) {
-					cmm_print(CMM_LOG_DEBUG,
-					    "conn: expired proto=%u%s",
-					    conn->proto,
-					    (conn->flags & CONN_F_HAS_NAT) ?
-					    " (NAT)" : "");
-					conn_remove(g, conn);
-				}
-				pos = tmp;
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn,
+			    hash_entry);
+			if (!(conn->flags & CONN_F_OFFLOADED)) {
+				if (conn_try_offload(g, conn) == 0)
+					retried++;
 			}
 		}
 	}
+
+	if (retried > 0)
+		cmm_print(CMM_LOG_INFO,
+		    "conn: maintenance re-offloaded %u flows", retried);
 
 	/* Free unreferenced routes */
 	cmm_route_gc(g);
 
-	/* Periodic stats (~10s at 1s poll) */
-	{
-		static unsigned int poll_count;
-
-		if (++poll_count % 10 == 0)
-			cmm_print(CMM_LOG_INFO,
-			    "conn: %u tracked, %u offloaded",
-			    conn_count, conn_offloaded);
-	}
+	cmm_print(CMM_LOG_INFO, "conn: %u tracked, %u offloaded",
+	    conn_count, conn_offloaded);
 }
 
 /* --- CDX flow counter sync to PF state table --------------------- */
