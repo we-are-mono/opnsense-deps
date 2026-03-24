@@ -1,0 +1,24 @@
+<firmware>
+    <mirrors allow_custom="true">
+        <mirror>
+            <url/>
+            <description>(default)</description>
+        </mirror>
+        <mirror>
+            <url>https://opnsense.mono.si</url>
+            <description>Mono (HTTPS, Nuremberg, DE)</description>
+        </mirror>
+    </mirrors>
+    <flavours allow_custom="true">
+        <flavour>
+            <name/>
+            <description>(default)</description>
+        </flavour>
+    </flavours>
+    <families>
+        <family>
+            <name/>
+            <description>Community</description>
+        </family>
+    </families>
+</firmware>
