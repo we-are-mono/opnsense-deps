@@ -258,6 +258,7 @@ ipr_timer_fn(void *arg __unused)
 	}
 
 	printf("cdx: ipr: timer thread exiting\n");
+	wakeup(__DEVOLATILE(const void *, &ipr_timer_should_stop));
 	kthread_exit();
 }
 

@@ -300,11 +300,6 @@ The `knlist_init_mtx(&rsel.si_note, &mtx)` in module load associates the
 knlist with the module mutex — all `f_event` callbacks are called with
 the mutex held.
 
-**Note:** `auto_bridge.c` has the same missing `d_kqfilter` issue.  It is
-dormant because `auto_bridge.ko` is not loaded during routing tests
-(`autobridge_fd` stays -1, skipping kqueue registration).  Must be fixed
-before enabling L2 bridge offload.
-
 ### CMM event loop integration
 
 CMM opens `/dev/pfnotify` at startup (`O_RDONLY | O_NONBLOCK`).  The fd
