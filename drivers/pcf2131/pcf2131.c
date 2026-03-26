@@ -297,6 +297,14 @@ pcf2131_start(void *arg)
 	clockflags = CLOCKF_GETTIME_NO_ADJ | CLOCKF_SETTIME_NO_TS;
 	clock_register_flags(dev, 1000000 / 2, clockflags);
 	clock_schedule(dev, 495000000);
+
+	/*
+	 * This driver attaches via config_intrhook, which runs after
+	 * inittodr() has already failed with ENXIO (no clock registered).
+	 * Re-invoke inittodr() now that the clock is registered so the
+	 * system time gets set from the RTC.
+	 */
+	inittodr(0);
 }
 
 static int
