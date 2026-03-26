@@ -250,8 +250,7 @@ package: all
 	install -m 755 ${PKG_RCDDIR}/fand ${PKG_STAGEDIR}/usr/local/etc/rc.d/
 	install -m 755 ${PKG_RCDDIR}/mwifiex_uap ${PKG_STAGEDIR}/usr/local/etc/rc.d/
 	# rc.syshook early scripts
-	install -m 755 ${PKG_RCDDIR}/01-growfs ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
-	install -m 755 ${PKG_RCDDIR}/02-mono-modules ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
+	install -m 755 ${PKG_RCDDIR}/01-mono-modules ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
 	# OPNsense plugin files (hwmon dashboard widget)
 	cp -R ${OPSDIR}/plugins/hwmon/src/opnsense/ ${PKG_STAGEDIR}/usr/local/opnsense/
 	chmod 755 ${PKG_STAGEDIR}/usr/local/opnsense/scripts/hwmon/sensors.py
