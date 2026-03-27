@@ -57,9 +57,8 @@ echo ">>> Creating ZFS image (${IMGSIZE})..."
 truncate -s ${IMGSIZE} ${ARMIMG}
 DEV=$(mdconfig -a -t vnode -f ${ARMIMG})
 
-gpart create -s GPT ${DEV}
-gpart add -t efi -l boot -s ${ARM_FAT_SIZE} ${DEV}
-gpart add -t freebsd-zfs -l rootpool ${DEV}
+DISK_SIZE=$(diskinfo /dev/${DEV} | awk '{ print $3 }')
+python3 ./mkgpt.py /dev/${DEV} 80 ${DISK_SIZE}
 newfs_msdos -L BOOT -F 16 /dev/${DEV}p1
 
 echo ">>> Creating ZFS pool..."
