@@ -320,6 +320,7 @@ image:
 	rm -f ${IMAGESDIR}/OPNsense-*-GATEWAY.img \
 		${IMAGESDIR}/OPNsense-*-GATEWAY.img.gz
 	cp ${OPSDIR}/mk-image.sh ${TOOLSDIR}/build/arm.sh
+	cp ${OPSDIR}/tools/mkgpt.py ${TOOLSDIR}/build/mkgpt.py
 	${MAKE} -C ${TOOLSDIR} arm-5G \
 		DEVICE=GATEWAY SETTINGS=${OPS_SETTINGS} \
 		TOOLSDIR=${TOOLSDIR} SRCDIR=${SRCDIR}
