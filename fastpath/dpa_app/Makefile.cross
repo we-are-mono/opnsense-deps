@@ -10,7 +10,7 @@
 #   - libxml2 cross-compiled for arm64 (in sysroot)
 #
 # Copyright 2026 Mono Technologies Inc.
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0+
 
 SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc

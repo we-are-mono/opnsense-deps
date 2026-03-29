@@ -6,7 +6,7 @@
 #       MACHINE=arm64 MACHINE_ARCH=aarch64 CC=cc LD=ld.lld
 #
 # Copyright 2026 Mono Technologies Inc.
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0+
 
 
 KMOD=	auto_bridge

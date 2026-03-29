@@ -11,7 +11,7 @@
 #   ssh target "cd /tmp/cmm && make && make install"
 #
 # Copyright 2026 Mono Technologies Inc.
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0+
 
 PROG=		cmm
 NO_MAN=		yes
