@@ -1,7 +1,8 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: GPL-2.0
  *
  * Copyright 2026 Mono Technologies Inc.
+ * Copyright 2008-2025 NXP
  *
  * NXP 88W9098 PCIe WiFi driver — register definitions and softc.
  */
