@@ -7,7 +7,7 @@
  * Reads bus voltage, shunt voltage, current, and power from
  * INA2xx-family digital power monitors over I2C.
  *
- * Based on Linux hwmon/ina2xx.c by Lothar Felten.
+ * Inspired by Linux hwmon/ina2xx.c by Lothar Felten.
  */
 
 #include <sys/cdefs.h>
@@ -24,60 +24,60 @@
 #include <dev/ofw/ofw_bus_subr.h>
 
 /* INA2xx register addresses */
-#define	INA2XX_CONFIG		0x00
-#define	INA2XX_SHUNT_VOLTAGE	0x01
-#define	INA2XX_BUS_VOLTAGE	0x02
-#define	INA2XX_POWER		0x03
-#define	INA2XX_CURRENT		0x04
-#define	INA2XX_CALIBRATION	0x05
+#define	INA_REG_CONFIG		0x00
+#define	INA_REG_SHUNT		0x01
+#define	INA_REG_BUS		0x02
+#define	INA_REG_POWER		0x03
+#define	INA_REG_CURRENT		0x04
+#define	INA_REG_CAL		0x05
 
 /* Default shunt resistance: 10 mOhm = 10000 uOhm */
-#define	INA2XX_RSHUNT_DEFAULT	10000
+#define	INA_RSHUNT_DEFAULT	10000
 
 /* Chip type enumeration */
 enum ina2xx_chip { INA219, INA226, INA234 };
 
 /* Per-chip-type configuration constants */
-struct ina2xx_config {
-	uint16_t	config_default;
-	uint16_t	calibration_value;
-	int		shunt_div;	/* shunt voltage divider (LSB factor) */
-	int		bus_voltage_shift;
-	int		bus_voltage_lsb;	/* uV per LSB */
-	int		power_lsb_factor;
+struct ina_chip_params {
+	uint16_t	cfg_default;
+	uint16_t	cal_value;
+	int		shunt_lsb_div;	/* shunt voltage divider (LSB factor) */
+	int		bus_shift;
+	int		bus_lsb_uv;	/* uV per LSB */
+	int		power_lsb_mult;
 };
 
-static const struct ina2xx_config ina2xx_configs[] = {
+static const struct ina_chip_params ina_chip_params[] = {
 	[INA219] = {
-		.config_default		= 0x399F,	/* PGA /8 */
-		.calibration_value	= 4096,
-		.shunt_div		= 100,
-		.bus_voltage_shift	= 3,
-		.bus_voltage_lsb	= 4000,		/* 4 mV */
-		.power_lsb_factor	= 20,
+		.cfg_default		= 0x399F,	/* PGA /8 */
+		.cal_value	= 4096,
+		.shunt_lsb_div		= 100,
+		.bus_shift	= 3,
+		.bus_lsb_uv	= 4000,		/* 4 mV */
+		.power_lsb_mult	= 20,
 	},
 	[INA226] = {
-		.config_default		= 0x4527,	/* avg=16 */
-		.calibration_value	= 2048,
-		.shunt_div		= 400,
-		.bus_voltage_shift	= 0,
-		.bus_voltage_lsb	= 1250,		/* 1.25 mV */
-		.power_lsb_factor	= 25,
+		.cfg_default		= 0x4527,	/* avg=16 */
+		.cal_value	= 2048,
+		.shunt_lsb_div		= 400,
+		.bus_shift	= 0,
+		.bus_lsb_uv	= 1250,		/* 1.25 mV */
+		.power_lsb_mult	= 25,
 	},
 	[INA234] = {
-		.config_default		= 0x4527,	/* same as INA226 */
-		.calibration_value	= 2048,
-		.shunt_div		= 400,
-		.bus_voltage_shift	= 4,
-		.bus_voltage_lsb	= 25600,	/* 25.6 mV */
-		.power_lsb_factor	= 32,
+		.cfg_default		= 0x4527,	/* same as INA226 */
+		.cal_value	= 2048,
+		.shunt_lsb_div		= 400,
+		.bus_shift	= 4,
+		.bus_lsb_uv	= 25600,	/* 25.6 mV */
+		.power_lsb_mult	= 32,
 	},
 };
 
 struct ina2xx_softc {
 	device_t		dev;
 	enum ina2xx_chip	chip;
-	const struct ina2xx_config *config;
+	const struct ina_chip_params *config;
 	uint32_t		rshunt;		/* shunt resistance, uOhm */
 	long			current_lsb_uA;
 	long			power_lsb_uW;
@@ -113,7 +113,7 @@ ina2xx_write_reg(device_t dev, uint8_t reg, uint16_t val)
 }
 
 /* ================================================================
- * Measurement value conversion (matches Linux ina2xx_get_value)
+ * Measurement value conversion
  * ================================================================ */
 
 static int
@@ -122,11 +122,11 @@ ina2xx_read_bus_voltage(struct ina2xx_softc *sc, int *millivolts)
 	uint16_t raw;
 	int error;
 
-	error = ina2xx_read_reg(sc->dev, INA2XX_BUS_VOLTAGE, &raw);
+	error = ina2xx_read_reg(sc->dev, INA_REG_BUS, &raw);
 	if (error != 0)
 		return (error);
-	*millivolts = ((raw >> sc->config->bus_voltage_shift) *
-	    sc->config->bus_voltage_lsb) / 1000;
+	*millivolts = ((raw >> sc->config->bus_shift) *
+	    sc->config->bus_lsb_uv) / 1000;
 	return (0);
 }
 
@@ -136,11 +136,11 @@ ina2xx_read_shunt_voltage(struct ina2xx_softc *sc, int *microvolts)
 	uint16_t raw;
 	int error;
 
-	error = ina2xx_read_reg(sc->dev, INA2XX_SHUNT_VOLTAGE, &raw);
+	error = ina2xx_read_reg(sc->dev, INA_REG_SHUNT, &raw);
 	if (error != 0)
 		return (error);
 	/* Shunt voltage register is signed */
-	*microvolts = (int16_t)raw * 1000 / sc->config->shunt_div;
+	*microvolts = (int16_t)raw * 1000 / sc->config->shunt_lsb_div;
 	return (0);
 }
 
@@ -150,7 +150,7 @@ ina2xx_read_current(struct ina2xx_softc *sc, int *milliamps)
 	uint16_t raw;
 	int error;
 
-	error = ina2xx_read_reg(sc->dev, INA2XX_CURRENT, &raw);
+	error = ina2xx_read_reg(sc->dev, INA_REG_CURRENT, &raw);
 	if (error != 0)
 		return (error);
 	/* Current register is signed */
@@ -164,7 +164,7 @@ ina2xx_read_power(struct ina2xx_softc *sc, int *milliwatts)
 	uint16_t raw;
 	int error;
 
-	error = ina2xx_read_reg(sc->dev, INA2XX_POWER, &raw);
+	error = ina2xx_read_reg(sc->dev, INA_REG_POWER, &raw);
 	if (error != 0)
 		return (error);
 	/* Power register is unsigned */
@@ -280,7 +280,7 @@ ina2xx_attach(device_t dev)
 	phandle_t node;
 	struct sysctl_oid *oid;
 	uint32_t shunt;
-	long dividend;
+	long shunt_lsb_nv;
 	int error;
 
 	sc = device_get_softc(dev);
@@ -288,13 +288,13 @@ ina2xx_attach(device_t dev)
 
 	cd = ofw_bus_search_compatible(dev, compat_data);
 	sc->chip = (enum ina2xx_chip)cd->ocd_data;
-	sc->config = &ina2xx_configs[sc->chip];
+	sc->config = &ina_chip_params[sc->chip];
 
 	node = ofw_bus_get_node(dev);
 
 	/* Read shunt resistance from DT (micro-ohms), default 10 mOhm */
 	if (OF_getencprop(node, "shunt-resistor", &shunt, sizeof(shunt)) <= 0)
-		shunt = INA2XX_RSHUNT_DEFAULT;
+		shunt = INA_RSHUNT_DEFAULT;
 	sc->rshunt = shunt;
 
 	/* Read label from DT */
@@ -303,21 +303,21 @@ ina2xx_attach(device_t dev)
 	sc->label[sizeof(sc->label) - 1] = '\0';
 
 	/* Compute current and power LSBs */
-	dividend = 1000000000L / sc->config->shunt_div;
-	sc->current_lsb_uA = dividend / (long)sc->rshunt;
-	sc->power_lsb_uW = sc->config->power_lsb_factor * sc->current_lsb_uA;
+	shunt_lsb_nv = 1000000000L / sc->config->shunt_lsb_div;
+	sc->current_lsb_uA = shunt_lsb_nv / (long)sc->rshunt;
+	sc->power_lsb_uW = sc->config->power_lsb_mult * sc->current_lsb_uA;
 
 	/* Program configuration register */
-	error = ina2xx_write_reg(dev, INA2XX_CONFIG,
-	    sc->config->config_default);
+	error = ina2xx_write_reg(dev, INA_REG_CONFIG,
+	    sc->config->cfg_default);
 	if (error != 0) {
 		device_printf(dev, "failed to write config register\n");
 		return (ENXIO);
 	}
 
 	/* Program calibration register */
-	error = ina2xx_write_reg(dev, INA2XX_CALIBRATION,
-	    sc->config->calibration_value);
+	error = ina2xx_write_reg(dev, INA_REG_CAL,
+	    sc->config->cal_value);
 	if (error != 0) {
 		device_printf(dev, "failed to write calibration register\n");
 		return (ENXIO);
