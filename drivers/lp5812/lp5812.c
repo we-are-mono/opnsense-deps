@@ -54,7 +54,7 @@
 #include "iicbus_if.h"
 
 /* ----------------------------------------------------------------
- * LP5812 Register definitions (from leds-lp5812.h)
+ * LP5812 Register definitions (from LP5812 datasheet)
  * ---------------------------------------------------------------- */
 
 #define	LP5812_REG_ENABLE		0x0000
@@ -177,7 +177,7 @@ lp5812_init_device(struct lp5812_softc *sc)
 {
 	int err;
 
-	/* Stabilization delay (1ms, matches Linux driver) */
+	/* Stabilization delay (1ms per LP5812 datasheet) */
 	DELAY(1100);
 
 	/* Enable chip */
