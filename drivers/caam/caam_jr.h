@@ -21,7 +21,7 @@ struct caam_request;
 
 /*
  * Ring depth — must be a power of 2, max 1024 per hardware.
- * Linux default is 512 (CONFIG_CRYPTO_DEV_FSL_CAAM_RINGSIZE = 9, 1<<9).
+ * Default 512 entries (1<<9).
  */
 #define CAAM_JR_DEPTH		512
 #define CAAM_JR_DEPTH_MASK	(CAAM_JR_DEPTH - 1)

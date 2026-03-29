@@ -69,7 +69,7 @@ caam_probe(device_t dev)
  *
  * Used for RNG state handle instantiation during controller attach,
  * before any Job Ring child devices are available.  Follows the same
- * protocol as Linux's run_descriptor_deco0() in ctrl.c.
+ * protocol described in the NXP SEC reference manual (DECO direct mode).
  *
  * Returns 0 on success; *status receives the DECO operation status.
  */
@@ -171,7 +171,7 @@ caam_run_deco0(struct caam_softc *sc, uint32_t *desc, int nwords,
  * Configure the TRNG (True Random Number Generator).
  *
  * Programs entropy sampling delay, frequency count limits, and
- * statistical self-test parameters.  Matches Linux's kick_trng().
+ * statistical self-test parameters per the NXP SEC TRNG specification.
  */
 static void
 caam_kick_trng(struct caam_softc *sc, uint32_t ent_delay)
@@ -244,37 +244,37 @@ caam_build_rng_inst_desc(uint32_t *desc, int handle, int gen_sk)
 
 	if (handle == 0 && gen_sk) {
 		/* SH0 with secure key generation — 7 words */
-		desc[idx++] = CMD_DESC_HDR | HDR_ONE | 7;
+		desc[idx++] = CAAM_CMD_DESC_HDR | CAAM_HDR_ONE | 7;
 
 		/* Instantiate RNG SH0 with prediction resistance */
-		desc[idx++] = OP_TYPE_CLASS1_ALG | OP_ALG_ALGSEL_RNG |
-		    OP_ALG_AS_INIT | OP_ALG_PR_ON;
+		desc[idx++] = CAAM_OP_TYPE_CLASS1_ALG | CAAM_OP_ALG_ALGSEL_RNG |
+		    CAAM_OP_ALG_AS_INIT | CAAM_OP_ALG_PR_ON;
 
 		/* JUMP: wait for Class 1 done (skip 1 word) */
-		desc[idx++] = CMD_JUMP | JUMP_CLASS_CLASS1 | 1;
+		desc[idx++] = CAAM_CMD_JUMP | CAAM_JUMP_CLASS_CLASS1 | 1;
 
 		/* LOAD IMM: write 1 to CLRW to reset done interrupt */
-		desc[idx++] = CMD_LOAD | LDST_CLASS_DECO | LDST_IMM |
-		    LDST_SRCDST_WORD_CLRW | sizeof(uint32_t);
+		desc[idx++] = CAAM_CMD_LOAD | CAAM_LDST_CLASS_DECO | CAAM_LDST_IMM |
+		    CAAM_LDST_SRCDST_WORD_CLRW | sizeof(uint32_t);
 		desc[idx++] = 1;
 
 		/* Generate secure keys (JDKEK, TDKEK, TDSK) */
-		desc[idx++] = OP_TYPE_CLASS1_ALG | OP_ALG_ALGSEL_RNG |
-		    OP_ALG_AAI_RNG4_SK;
+		desc[idx++] = CAAM_OP_TYPE_CLASS1_ALG | CAAM_OP_ALG_ALGSEL_RNG |
+		    CAAM_OP_ALG_AAI_RNG4_SK;
 
 		/* Halt */
-		desc[idx++] = CMD_JUMP | JUMP_CLASS_CLASS1 | JUMP_TYPE_HALT;
+		desc[idx++] = CAAM_CMD_JUMP | CAAM_JUMP_CLASS_CLASS1 | CAAM_JUMP_TYPE_HALT;
 	} else {
 		/* SH0 without gen_sk or SH1 — 3 words */
-		desc[idx++] = CMD_DESC_HDR | HDR_ONE | 3;
+		desc[idx++] = CAAM_CMD_DESC_HDR | CAAM_HDR_ONE | 3;
 
 		/* Instantiate RNG with prediction resistance */
-		desc[idx++] = OP_TYPE_CLASS1_ALG | OP_ALG_ALGSEL_RNG |
-		    ((uint32_t)handle << OP_ALG_AAI_SHIFT) |
-		    OP_ALG_AS_INIT | OP_ALG_PR_ON;
+		desc[idx++] = CAAM_OP_TYPE_CLASS1_ALG | CAAM_OP_ALG_ALGSEL_RNG |
+		    ((uint32_t)handle << CAAM_OP_ALG_AAI_SHIFT) |
+		    CAAM_OP_ALG_AS_INIT | CAAM_OP_ALG_PR_ON;
 
 		/* Halt */
-		desc[idx++] = CMD_JUMP | JUMP_CLASS_CLASS1 | JUMP_TYPE_HALT;
+		desc[idx++] = CAAM_CMD_JUMP | CAAM_JUMP_CLASS_CLASS1 | CAAM_JUMP_TYPE_HALT;
 	}
 
 	return (idx);
@@ -294,18 +294,18 @@ caam_build_rng_deinst_desc(uint32_t *desc, uint32_t sh_mask)
 {
 	int idx = 0;
 
-	desc[idx++] = CMD_DESC_HDR | HDR_ONE | 3;
+	desc[idx++] = CAAM_CMD_DESC_HDR | CAAM_HDR_ONE | 3;
 
 	/*
 	 * OPERATION: Algorithm RNG, AS=INITFINAL (deinstantiate).
 	 * The sh_mask selects which handles to deinstantiate via AAI bits.
 	 * No prediction resistance flag for deinstantiation.
 	 */
-	desc[idx++] = OP_TYPE_CLASS1_ALG | OP_ALG_ALGSEL_RNG |
-	    ((uint32_t)sh_mask << OP_ALG_AAI_SHIFT) |
-	    OP_ALG_AS_INITFINAL;
+	desc[idx++] = CAAM_OP_TYPE_CLASS1_ALG | CAAM_OP_ALG_ALGSEL_RNG |
+	    ((uint32_t)sh_mask << CAAM_OP_ALG_AAI_SHIFT) |
+	    CAAM_OP_ALG_AS_INITFINAL;
 
-	desc[idx++] = CMD_JUMP | JUMP_CLASS_CLASS1 | JUMP_TYPE_HALT;
+	desc[idx++] = CAAM_CMD_JUMP | CAAM_JUMP_CLASS_CLASS1 | CAAM_JUMP_TYPE_HALT;
 
 	return (idx);
 }
@@ -337,7 +337,7 @@ caam_rng_init(struct caam_softc *sc)
 	/*
 	 * Check for handles instantiated WITHOUT prediction resistance.
 	 * U-Boot typically instantiates SH0/SH1 without PR.  We need PR
-	 * for OP_ALG_PR_ON in generate descriptors, so deinstantiate
+	 * for CAAM_OP_ALG_PR_ON in generate descriptors, so deinstantiate
 	 * any handle that has IF set but PR clear.
 	 */
 	rdsta_if = rdsta & (RDSTA_IF0 | RDSTA_IF1);
@@ -508,7 +508,7 @@ caam_attach(device_t dev)
 	 * CAAM registers are ALWAYS big-endian (legacy from PowerPC era),
 	 * regardless of the CPU's byte order.
 	 *
-	 * The detection matches Linux's approach:
+	 * The detection approach:
 	 *   1. Read CSTA with a BE read (safe default for QorIQ)
 	 *   2. If PLEND is set → platform is LE → registers need BE swap
 	 *   3. If PLEND not set → platform is BE → native access works
@@ -585,8 +585,7 @@ caam_attach(device_t dev)
 	 * Enable Job Ring processing.
 	 *
 	 * The JRSTART register must be written to start each JR before
-	 * child drivers can submit descriptors.  Linux does this in
-	 * caam_ctrl_init (drivers/crypto/caam/ctrl.c).
+	 * child drivers can submit descriptors.
 	 */
 	CAAM_WRITE(sc, CAAM_JRSTART,
 	    JRSTART_JR0 | JRSTART_JR1 | JRSTART_JR2 | JRSTART_JR3);

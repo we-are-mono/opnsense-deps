@@ -332,15 +332,15 @@ caam_cipher_algtype(int cipher_alg)
 
 	switch (cipher_alg) {
 	case CRYPTO_AES_CBC:
-		return (OP_ALG_ALGSEL_AES | OP_ALG_AAI_CBC);
+		return (CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_CBC);
 	case CRYPTO_AES_ICM:
-		return (OP_ALG_ALGSEL_AES | OP_ALG_AAI_CTR_MOD128);
+		return (CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_CTR_MOD128);
 	case CRYPTO_AES_XTS:
-		return (OP_ALG_ALGSEL_AES | OP_ALG_AAI_XTS);
+		return (CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_XTS);
 	case CRYPTO_DES_CBC:
-		return (OP_ALG_ALGSEL_DES | OP_ALG_AAI_CBC);
+		return (CAAM_OP_ALG_ALGSEL_DES | CAAM_OP_ALG_AAI_CBC);
 	case CRYPTO_3DES_CBC:
-		return (OP_ALG_ALGSEL_3DES | OP_ALG_AAI_CBC);
+		return (CAAM_OP_ALG_ALGSEL_3DES | CAAM_OP_ALG_AAI_CBC);
 	case CRYPTO_NULL_CBC:
 		return (0);	/* No cipher operation */
 	default:
@@ -379,22 +379,22 @@ caam_auth_algsel(int auth_alg)
 	switch (auth_alg) {
 	case CRYPTO_SHA1:
 	case CRYPTO_SHA1_HMAC:
-		return (OP_ALG_ALGSEL_SHA1);
+		return (CAAM_OP_ALG_ALGSEL_SHA1);
 	case CRYPTO_SHA2_224:
 	case CRYPTO_SHA2_224_HMAC:
-		return (OP_ALG_ALGSEL_SHA224);
+		return (CAAM_OP_ALG_ALGSEL_SHA224);
 	case CRYPTO_SHA2_256:
 	case CRYPTO_SHA2_256_HMAC:
-		return (OP_ALG_ALGSEL_SHA256);
+		return (CAAM_OP_ALG_ALGSEL_SHA256);
 	case CRYPTO_SHA2_384:
 	case CRYPTO_SHA2_384_HMAC:
-		return (OP_ALG_ALGSEL_SHA384);
+		return (CAAM_OP_ALG_ALGSEL_SHA384);
 	case CRYPTO_SHA2_512:
 	case CRYPTO_SHA2_512_HMAC:
-		return (OP_ALG_ALGSEL_SHA512);
+		return (CAAM_OP_ALG_ALGSEL_SHA512);
 	case CRYPTO_MD5:
 	case CRYPTO_MD5_HMAC:
-		return (OP_ALG_ALGSEL_MD5);
+		return (CAAM_OP_ALG_ALGSEL_MD5);
 	default:
 		return (0);
 	}
@@ -459,8 +459,8 @@ caam_session_alloc_auth_key_dma(device_t dev, struct caam_session *sess)
  *   3. Stores the split key to auth_key_dma (FIFO STORE SPLIT_KEK)
  *
  * This replaces DKP pointer mode which causes DECO watchdog timeouts
- * on LS1046A ERA 8.  Matches Linux's gen_split_key() approach used
- * for ERA < 6 and as a fallback.
+ * on LS1046A ERA 8.  Uses the KEY→HMAC INIT→FIFO STORE sequence
+ * described in the NXP SEC reference manual for split key derivation.
  *
  * Must be called after caam_session_alloc_auth_key_dma().
  * dev must be a JR device (caam_jr_softc).
@@ -514,7 +514,7 @@ caam_gen_split_key(device_t dev, struct caam_session *sess)
 
 	/*
 	 * Derive HMAC split key (ipad || opad partial hashes).
-	 * Matches Linux key_gen.c gen_split_key() exactly:
+	 * Hardware-mandated sequence per NXP SEC reference manual:
 	 *
 	 *   KEY CLASS2 keylen PTR(auth_key_dma)
 	 *   OPERATION CLASS2_ALG algsel HMAC INIT DECRYPT
@@ -531,24 +531,24 @@ caam_gen_split_key(device_t dev, struct caam_session *sess)
 
 	/* KEY: load raw key into Class 2 key register via DMA pointer */
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS2 | sess->auth_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS2 | sess->auth_klen);
 	caam_desc_add_ptr(desc, sess->auth_key_dma.paddr);
 
 	/* OPERATION: HMAC INIT DECRYPT — triggers ipad/opad expansion */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
-	    (sess->auth_algtype & OP_ALG_ALGSEL_MASK) |
-	    OP_ALG_AAI_HMAC | OP_ALG_AS_INIT | OP_ALG_DECRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
+	    (sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK) |
+	    CAAM_OP_ALG_AAI_HMAC | CAAM_OP_ALG_AS_INIT | CAAM_OP_ALG_DECRYPT);
 
 	/* FIFO LOAD: 0 bytes, CLASS2, MSG, LAST2, IMM — finalize */
 	caam_desc_add_word(desc,
-	    CMD_FIFO_LOAD | FIFOLD_CLASS_CLASS2 | FIFOLD_IMM |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST2);
+	    CAAM_CMD_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 | CAAM_FIFOLD_IMM |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST2);
 
 	/* FIFO STORE: extract split key to DMA buffer */
 	caam_desc_add_word(desc,
-	    CMD_FIFO_STORE | FIFOST_CLASS_CLASS2KEY |
-	    FIFOST_TYPE_SPLIT_KEK | sess->split_key_len);
+	    CAAM_CMD_FIFO_STORE | CAAM_FIFOST_CLASS_CLASS2KEY |
+	    CAAM_FIFOST_TYPE_SPLIT_KEK | sess->split_key_len);
 	caam_desc_add_ptr(desc, sess->auth_key_dma.paddr);
 
 	result.done = 0;
@@ -605,7 +605,7 @@ caam_newsession(device_t dev, crypto_session_t cses,
 		sess->ivlen = AES_GCM_IV_LEN;
 		sess->icvlen = (csp->csp_auth_mlen != 0) ?
 		    csp->csp_auth_mlen : AES_GCM_TAG_LEN;
-		sess->cipher_algtype = OP_ALG_ALGSEL_AES | OP_ALG_AAI_GCM;
+		sess->cipher_algtype = CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_GCM;
 
 		error = caam_gcm_build_enc_shdesc(sess, dev);
 		if (error != 0)
@@ -643,9 +643,9 @@ caam_newsession(device_t dev, crypto_session_t cses,
 		sess->auth_klen = csp->csp_auth_klen;
 		memcpy(sess->auth_key, csp->csp_auth_key, sess->auth_klen);
 		sess->split_key_len = caam_split_key_len(
-		    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+		    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 		sess->split_key_pad_len = caam_split_key_pad_len(
-		    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+		    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 
 		/* Allocate DMA buffer and derive split key via JR */
 		error = caam_session_alloc_auth_key_dma(dev, sess);
@@ -691,9 +691,9 @@ caam_newsession(device_t dev, crypto_session_t cses,
 			sess->alg_type = CAAM_ALG_HMAC;
 			sess->auth_klen = csp->csp_auth_klen;
 			sess->split_key_len = caam_split_key_len(
-			    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+			    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 			sess->split_key_pad_len = caam_split_key_pad_len(
-			    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+			    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 			memcpy(sess->auth_key, csp->csp_auth_key,
 			    sess->auth_klen);
 
