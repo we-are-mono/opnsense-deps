@@ -20,7 +20,7 @@
  * Copyright 2017-2018,2021 NXP
  * Copyright 2026 Mono Technologies Inc.
  *
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #include <sys/param.h>

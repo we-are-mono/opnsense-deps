@@ -8,7 +8,7 @@
  * Ported from NXP ASK module_mcast.c / module_mc4.c / module_mc6.c.
  *
  * Copyright 2026 Mono Technologies Inc.
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #include <sys/types.h>

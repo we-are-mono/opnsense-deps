@@ -6,7 +6,7 @@
  * hardware flow offload on the NXP LS1046A.
  *
  * Copyright 2026 Mono Technologies Inc.
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #include <sys/types.h>

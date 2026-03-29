@@ -8,7 +8,10 @@
  * FreeBSD port of the Linux auto_bridge kernel module.
  *
  * Copyright 2026 Mono Technologies Inc.
- * SPDX-License-Identifier: BSD-2-Clause
+ * Copyright (C) 2007 Mindspeed Technologies, Inc.
+ * Copyright 2015-2016 Freescale Semiconductor, Inc.
+ * Copyright 2017, 2021 NXP
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #include <sys/param.h>

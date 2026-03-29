@@ -1,7 +1,7 @@
 /*
  * CAAM descriptor composition header — FreeBSD port.
  *
- * Ported from Linux drivers/crypto/caam/desc.h.  Provides all CAAM
+ * Inspired by Linux drivers/crypto/caam/desc.h.  Provides all CAAM
  * descriptor instruction macros needed by the CDX IPsec offload code.
  * Self-contained — no OS-specific includes required (pure #defines).
  *

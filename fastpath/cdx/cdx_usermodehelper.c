@@ -9,9 +9,11 @@
  * start_init), adapted for use from loadable kernel modules.
  *
  * Copyright (c) 2026 Mono Technologies Inc.
+ * Copyright 2014-2016 Freescale Semiconductor, Inc.
+ * Copyright 2017-2022 NXP
  * All rights reserved.
  *
- * SPDX-License-Identifier: BSD-2-Clause
+ * SPDX-License-Identifier: GPL-2.0+
  */
 
 #include <sys/param.h>

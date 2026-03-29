@@ -8,7 +8,7 @@
 #   sudo make -C /usr/tools base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools
 #
 # Copyright 2026 Mono Technologies Inc.
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0+
 
 SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc
