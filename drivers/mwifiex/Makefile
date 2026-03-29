@@ -7,7 +7,7 @@
 # Makefile's fetch-vendor target into _vendor/.
 #
 # Copyright 2026 Mono Technologies Inc.
-# SPDX-License-Identifier: BSD-2-Clause
+# SPDX-License-Identifier: GPL-2.0
 
 VENDORDIR?=	${.CURDIR}/../../_vendor
 MLANDIR=	${VENDORDIR}/mwifiex/mlan
