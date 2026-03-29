@@ -102,10 +102,10 @@ caam_rng_generate(void)
 	out_pa = caam_rng.out_mem.paddr;
 
 	/* Build RNG descriptor */
-	desc[0] = cpu_to_caam32(CMD_DESC_HDR | HDR_ONE | 5);
-	desc[1] = cpu_to_caam32(CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-	    OP_ALG_ALGSEL_RNG | OP_ALG_PR_ON);
-	desc[2] = cpu_to_caam32(CMD_FIFO_STORE | FIFOST_TYPE_RNGSTORE |
+	desc[0] = cpu_to_caam32(CAAM_CMD_DESC_HDR | CAAM_HDR_ONE | 5);
+	desc[1] = cpu_to_caam32(CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+	    CAAM_OP_ALG_ALGSEL_RNG | CAAM_OP_ALG_PR_ON);
+	desc[2] = cpu_to_caam32(CAAM_CMD_FIFO_STORE | CAAM_FIFOST_TYPE_RNGSTORE |
 	    CAAM_RNG_OUTSIZE);
 	desc[3] = cpu_to_caam32((uint32_t)(out_pa >> 32));
 	desc[4] = cpu_to_caam32((uint32_t)out_pa);

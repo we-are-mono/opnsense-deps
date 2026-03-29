@@ -448,7 +448,6 @@ caam_qi_drv_ctx_create(struct caam_qi_softc *qi, struct caam_session *sess,
 	 *   RSLS (bit 31) = Route SEQ LOAD/STORE to FD — tells the QI
 	 *   hardware to route compound FD S/G data to the DECO's sequential
 	 *   input/output.  Without RSLS, SEQ commands have no data source.
-	 *   Linux always sets RSLS (see drivers/crypto/caam/qi.c).
 	 * Word 1: ABS — absolute addressing mode
 	 */
 	prehdr = ctx->prehdr_shdesc.vaddr;
@@ -543,7 +542,7 @@ caam_qi_newsession(device_t dev, crypto_session_t cses,
 		sess->ivlen = AES_GCM_IV_LEN;
 		sess->icvlen = (csp->csp_auth_mlen != 0) ?
 		    csp->csp_auth_mlen : AES_GCM_TAG_LEN;
-		sess->cipher_algtype = OP_ALG_ALGSEL_AES | OP_ALG_AAI_GCM;
+		sess->cipher_algtype = CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_GCM;
 
 		error = caam_qi_drv_ctx_create(qi, sess, &sess->qi_enc_ctx,
 		    caam_qi_gcm_build_enc_shdesc);
@@ -577,9 +576,9 @@ caam_qi_newsession(device_t dev, crypto_session_t cses,
 		sess->auth_klen = csp->csp_auth_klen;
 		memcpy(sess->auth_key, csp->csp_auth_key, sess->auth_klen);
 		sess->split_key_len = caam_split_key_len(
-		    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+		    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 		sess->split_key_pad_len = caam_split_key_pad_len(
-		    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+		    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 
 		/* Allocate DMA buffer and derive split key via JR */
 		error = caam_session_alloc_auth_key_dma(qi->dev, sess);
@@ -633,9 +632,9 @@ caam_qi_newsession(device_t dev, crypto_session_t cses,
 			sess->alg_type = CAAM_ALG_HMAC;
 			sess->auth_klen = csp->csp_auth_klen;
 			sess->split_key_len = caam_split_key_len(
-			    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+			    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 			sess->split_key_pad_len = caam_split_key_pad_len(
-			    sess->auth_algtype & OP_ALG_ALGSEL_MASK);
+			    sess->auth_algtype & CAAM_OP_ALG_ALGSEL_MASK);
 			memcpy(sess->auth_key, csp->csp_auth_key,
 			    sess->auth_klen);
 

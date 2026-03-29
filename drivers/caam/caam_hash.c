@@ -65,12 +65,12 @@ caam_hash_build_shdesc(struct caam_session *sess, device_t dev)
 		return (error);
 
 	desc = sess->enc_shdesc.vaddr;
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL);
 
 	if (is_hmac) {
 		/* Skip key loading if already shared */
 		key_jump = caam_desc_add_jump(desc,
-		    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+		    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 		/* Load pre-derived HMAC split key (pointer mode, 3 words) */
 		caam_desc_add_split_key_ptr(desc, sess->split_key_pad_len,
@@ -81,31 +81,31 @@ caam_hash_build_shdesc(struct caam_session *sess, device_t dev)
 
 	/* OPERATION: hash/HMAC init+final, always "encrypt" (compute) */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
 	    sess->auth_algtype |
-	    (is_hmac ? OP_ALG_AAI_HMAC_PRECOMP : 0) |
-	    OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    (is_hmac ? CAAM_OP_ALG_AAI_HMAC_PRECOMP : 0) |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/*
 	 * VARSEQINLEN = SEQINLEN + 0.
 	 * SEQINLEN is set by the SEQ IN PTR command in the JD body
-	 * (which runs first due to HDR_REVERSE).  REG0 is always zero
-	 * at descriptor start.  Matches Linux cnstr_shdsc_ahash().
+	 * (which runs first due to CAAM_HDR_REVERSE).  REG0 is always zero
+	 * at descriptor start.
 	 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Feed all data to Class 2 (LAST2 for finalization) */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST2);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST2);
 
 	/* Store digest from Class 2 context register */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_STORE | LDST_CLASS_2_CCB |
-	    LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
+	    CAAM_CMD_SEQ_STORE | CAAM_LDST_CLASS_2_CCB |
+	    CAAM_LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
 
 	sess->enc_shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -114,7 +114,7 @@ caam_hash_build_shdesc(struct caam_session *sess, device_t dev)
 /* ================================================================
  * Hash/HMAC Job Descriptor
  *
- * Layout (always-EXT, matching Linux):
+ * Layout (always-EXT mode on 64-bit):
  *   [0]     JD header (SHARED | SHARE_DEFER | REVERSE)
  *   [1-2]   Shared descriptor pointer (64-bit)
  *   [3]     SEQ IN PTR | EXT (payload data)
@@ -150,15 +150,15 @@ caam_hash_build_job(struct caam_jr_softc *sc, struct caam_request *req,
 	{
 		uint32_t hdr = caam_to_cpu32(desc[0]);
 
-		hdr |= HDR_SHARED | HDR_SHARE_DEFER | HDR_REVERSE;
-		hdr |= (shdesc_len << HDR_START_IDX_SHIFT);
+		hdr |= CAAM_HDR_SHARED | CAAM_HDR_SHARE_DEFER | CAAM_HDR_REVERSE;
+		hdr |= (shdesc_len << CAAM_HDR_START_IDX_SHIFT);
 		desc[0] = cpu_to_caam32(hdr);
 	}
 
 	/* Shared descriptor pointer */
 	caam_desc_add_ptr(desc, sess->enc_shdesc.paddr);
 
-	/* === JD body (runs FIRST with HDR_REVERSE) === */
+	/* === JD body (runs FIRST with CAAM_HDR_REVERSE) === */
 
 	/* SEQ IN PTR: data to hash (always EXT mode) */
 	caam_desc_add_seq_in_ptr(desc, buf_pa, data_len);

@@ -7,7 +7,7 @@
  *
  * QI shared descriptors differ from JR versions in two ways:
  *   1. Parameters (assoclen, IV) read via SEQ LOAD from the input stream
- *      (replacing the JD body which runs first with HDR_REVERSE in JR mode)
+ *      (replacing the JD body which runs first with CAAM_HDR_REVERSE in JR mode)
  *   2. No per-request job descriptor — everything is in the shared descriptor
  *
  * Instruction ordering: KEY and OPERATION must come before SEQ FIFO LOAD
@@ -65,22 +65,22 @@ qi_shdesc_add_nifp(uint32_t *desc)
 {
 
 	caam_desc_add_word(desc,
-	    CMD_JUMP | JUMP_TEST_ALL | JUMP_COND_NIFP | 1);
+	    CAAM_CMD_JUMP | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_NIFP | 1);
 }
 
 /*
  * Pipeline barrier after SEQ LOAD into MATH register.
  * Ensures the DECO pipeline drains before MATH operations
- * read the loaded value.  Matches Linux's wait_load_cmd pattern.
+ * read the loaded value.  Required by SEC pipeline ordering rules.
  */
 static void
 qi_shdesc_add_load_barrier(uint32_t *desc)
 {
 
 	caam_desc_add_word(desc,
-	    CMD_JUMP | JUMP_TEST_ALL |
-	    JUMP_COND_CALM | JUMP_COND_NCP | JUMP_COND_NOP |
-	    JUMP_COND_NIP | JUMP_COND_NIFP | 1);
+	    CAAM_CMD_JUMP | CAAM_JUMP_TEST_ALL |
+	    CAAM_JUMP_COND_CALM | CAAM_JUMP_COND_NCP | CAAM_JUMP_COND_NOP |
+	    CAAM_JUMP_COND_NIP | CAAM_JUMP_COND_NIFP | 1);
 }
 
 /* ================================================================
@@ -98,16 +98,16 @@ caam_qi_gcm_build_enc_shdesc(struct caam_session *sess, device_t dev,
 		 *zero_payload_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL);
 
 	/* Skip key loading if already shared */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	/* Load AES key (inline) */
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS1 | KEY_DEST_CLASS_REG |
-	    KEY_IMM | sess->enc_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS1 | CAAM_KEY_DEST_CLASS_REG |
+	    CAAM_KEY_IMM | sess->enc_klen);
 	caam_desc_add_key_imm(desc, sess->enc_key, sess->enc_klen);
 
 	caam_desc_set_jump_target(desc, key_jump);
@@ -118,102 +118,102 @@ caam_qi_gcm_build_enc_shdesc(struct caam_session *sess, device_t dev,
 	 * initialized before it can accept IV data via FLUSH1.
 	 */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-	    OP_ALG_ALGSEL_AES | OP_ALG_AAI_GCM |
-	    OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+	    CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_GCM |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/* Read assoclen (4 bytes, BE) from input stream → REG3 lower half */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_LOAD | LDST_CLASS_DECO |
-	    LDST_SRCDST_WORD_DECO_MATH3 |
-	    (4 << LDST_OFFSET_SHIFT) | sizeof(uint32_t));
+	    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_DECO |
+	    CAAM_LDST_SRCDST_WORD_DECO_MATH3 |
+	    (4 << CAAM_LDST_OFFSET_SHIFT) | sizeof(uint32_t));
 	qi_shdesc_add_load_barrier(desc);
 
 	/* Read IV (12 bytes) from input stream into Class 1 FIFO */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 |
-	    FIFOLD_TYPE_IV | FIFOLD_TYPE_FLUSH1 | AES_GCM_IV_LEN);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 |
+	    CAAM_FIFOLD_TYPE_IV | CAAM_FIFOLD_TYPE_FLUSH1 | AES_GCM_IV_LEN);
 
 	/* --- Same processing body as JR shdesc --- */
 
 	/* VARSEQOUTLEN = SEQINLEN - REG0(=0) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_SUB |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_SUB |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* If total length is zero, skip to ICV write */
 	zero_assoc_jump2 = caam_desc_add_jump(desc,
-	    JUMP_TEST_ALL | JUMP_COND_MATH_Z);
+	    CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_MATH_Z);
 
 	/* VARSEQINLEN = REG3 (= assoclen) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_REG3 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* If assoclen is zero, skip AAD */
 	zero_assoc_jump1 = caam_desc_add_jump(desc,
-	    JUMP_TEST_ALL | JUMP_COND_MATH_Z);
+	    CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_MATH_Z);
 
 	/* VARSEQOUTLEN = REG3 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_REG3 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Skip AAD in output */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_SKIP | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_SKIP | CAAM_FIFOLDST_VLF);
 
 	/* cryptlen = SEQINLEN - REG3 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_SUB |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG3 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_SUB |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* If cryptlen is zero, jump to zero-payload path */
 	zero_payload_jump = caam_desc_add_jump(desc,
-	    JUMP_TEST_ALL | JUMP_COND_MATH_Z);
+	    CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_MATH_Z);
 
 	/* Read AAD (CLASS1, AAD, FLUSH1) */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_AAD | FIFOLD_TYPE_FLUSH1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_AAD | CAAM_FIFOLD_TYPE_FLUSH1);
 
 	caam_desc_set_jump_target(desc, zero_assoc_jump1);
 
 	/* VARSEQINLEN = SEQINLEN - REG0 (remaining = cryptlen) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_SUB |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_SUB |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Write encrypted payload */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_MESSAGE_DATA | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_MESSAGE_DATA | CAAM_FIFOLDST_VLF);
 
 	/* Read plaintext (CLASS1, MSG, LAST1) */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST1);
 
 	/* Jump past zero-payload path */
-	caam_desc_add_word(desc, CMD_JUMP | JUMP_TEST_ALL | 2);
+	caam_desc_add_word(desc, CAAM_CMD_JUMP | CAAM_JUMP_TEST_ALL | 2);
 
 	/* Zero-payload: read AAD only (AAD | LAST1) */
 	caam_desc_set_jump_target(desc, zero_payload_jump);
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_AAD | FIFOLD_TYPE_LAST1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_AAD | CAAM_FIFOLD_TYPE_LAST1);
 
 	/* Zero-total-length target */
 	caam_desc_set_jump_target(desc, zero_assoc_jump2);
 
 	/* Write ICV */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_STORE | LDST_CLASS_1_CCB |
-	    LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
+	    CAAM_CMD_SEQ_STORE | CAAM_LDST_CLASS_1_CCB |
+	    CAAM_LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -227,95 +227,95 @@ caam_qi_gcm_build_dec_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t *key_jump, *zero_assoc_jump1, *zero_payload_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL);
 
 	/* Key loading */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS1 | KEY_DEST_CLASS_REG |
-	    KEY_IMM | sess->enc_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS1 | CAAM_KEY_DEST_CLASS_REG |
+	    CAAM_KEY_IMM | sess->enc_klen);
 	caam_desc_add_key_imm(desc, sess->enc_key, sess->enc_klen);
 
 	caam_desc_set_jump_target(desc, key_jump);
 
 	/* OPERATION before IV FIFO LOAD — GCM CHA must be initialized first */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-	    OP_ALG_ALGSEL_AES | OP_ALG_AAI_GCM |
-	    OP_ALG_AS_INITFINAL | OP_ALG_DECRYPT | OP_ALG_ICV_ON);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+	    CAAM_OP_ALG_ALGSEL_AES | CAAM_OP_ALG_AAI_GCM |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_DECRYPT | CAAM_OP_ALG_ICV_ON);
 
 	/* Read assoclen → REG3 lower half */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_LOAD | LDST_CLASS_DECO |
-	    LDST_SRCDST_WORD_DECO_MATH3 |
-	    (4 << LDST_OFFSET_SHIFT) | sizeof(uint32_t));
+	    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_DECO |
+	    CAAM_LDST_SRCDST_WORD_DECO_MATH3 |
+	    (4 << CAAM_LDST_OFFSET_SHIFT) | sizeof(uint32_t));
 	qi_shdesc_add_load_barrier(desc);
 
 	/* Read IV from input stream */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 |
-	    FIFOLD_TYPE_IV | FIFOLD_TYPE_FLUSH1 | AES_GCM_IV_LEN);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 |
+	    CAAM_FIFOLD_TYPE_IV | CAAM_FIFOLD_TYPE_FLUSH1 | AES_GCM_IV_LEN);
 
 	/* --- Same processing body as JR dec shdesc --- */
 
 	/* VARSEQINLEN = REG3 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_REG3 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	zero_assoc_jump1 = caam_desc_add_jump(desc,
-	    JUMP_TEST_ALL | JUMP_COND_MATH_Z);
+	    CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_MATH_Z);
 
 	/* VARSEQOUTLEN = REG3 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_REG3 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Skip AAD in output */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_SKIP | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_SKIP | CAAM_FIFOLDST_VLF);
 
 	/* Read AAD */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_AAD | FIFOLD_TYPE_FLUSH1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_AAD | CAAM_FIFOLD_TYPE_FLUSH1);
 
 	caam_desc_set_jump_target(desc, zero_assoc_jump1);
 
 	/* cryptlen = SEQOUTLEN - REG0 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_SUB |
-	    MATH_SRC0_SEQOUTLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_SUB |
+	    CAAM_MATH_SRC0_SEQOUTLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	zero_payload_jump = caam_desc_add_jump(desc,
-	    JUMP_TEST_ALL | JUMP_COND_MATH_Z);
+	    CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_MATH_Z);
 
 	/* VARSEQOUTLEN = SEQOUTLEN - REG0 */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_SUB |
-	    MATH_SRC0_SEQOUTLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_SUB |
+	    CAAM_MATH_SRC0_SEQOUTLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Write decrypted payload */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_MESSAGE_DATA | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_MESSAGE_DATA | CAAM_FIFOLDST_VLF);
 
 	/* Read ciphertext */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_FLUSH1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_FLUSH1);
 
 	caam_desc_set_jump_target(desc, zero_payload_jump);
 
 	/* Read ICV for verification */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 |
-	    FIFOLD_TYPE_ICV | FIFOLD_TYPE_LAST1 | sess->icvlen);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 |
+	    CAAM_FIFOLD_TYPE_ICV | CAAM_FIFOLD_TYPE_LAST1 | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -335,105 +335,105 @@ caam_qi_eta_build_enc_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t *key_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL | HDR_SAVECTX);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL | CAAM_HDR_SAVECTX);
 
-	/* Key loading first (matches Linux QI ETA order) */
+	/* Key loading first (key before operation per SEC RM) */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_split_key_ptr(desc, sess->split_key_pad_len,
 	    sess->auth_key_dma.paddr);
 
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS1 | KEY_DEST_CLASS_REG |
-	    KEY_IMM | sess->enc_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS1 | CAAM_KEY_DEST_CLASS_REG |
+	    CAAM_KEY_IMM | sess->enc_klen);
 	caam_desc_add_key_imm(desc, sess->enc_key, sess->enc_klen);
 
 	caam_desc_set_jump_target(desc, key_jump);
 
 	/* Read assoclen → REG3 lower half → DPOVRD */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_LOAD | LDST_CLASS_DECO |
-	    LDST_SRCDST_WORD_DECO_MATH3 |
-	    (4 << LDST_OFFSET_SHIFT) | sizeof(uint32_t));
+	    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_DECO |
+	    CAAM_LDST_SRCDST_WORD_DECO_MATH3 |
+	    (4 << CAAM_LDST_OFFSET_SHIFT) | sizeof(uint32_t));
 	qi_shdesc_add_load_barrier(desc);
 
 	/* Copy REG3 → DPOVRD (ETA uses DPOVRD for assoclen) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_REG3 |
-	    MATH_DEST_DPOVRD | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_DPOVRD | CAAM_MATH_LEN_4BYTE);
 
 	/* Read IV from input stream → Class 1 context register */
 	if (sess->ivlen > 0) {
 		int ctx1_iv_off = 0;
 
-		if ((sess->cipher_algtype & OP_ALG_AAI_MASK) ==
-		    OP_ALG_AAI_CTR_MOD128)
+		if ((sess->cipher_algtype & CAAM_OP_ALG_AAI_MASK) ==
+		    CAAM_OP_ALG_AAI_CTR_MOD128)
 			ctx1_iv_off = 16;
 
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (ctx1_iv_off << LDST_OFFSET_SHIFT) | sess->ivlen);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (ctx1_iv_off << CAAM_LDST_OFFSET_SHIFT) | sess->ivlen);
 	}
 
 	/* --- Same processing body as JR ETA enc shdesc --- */
 
 	/* Class 2 OPERATION: HMAC encrypt */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
-	    sess->auth_algtype | OP_ALG_AAI_HMAC_PRECOMP |
-	    OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
+	    sess->auth_algtype | CAAM_OP_ALG_AAI_HMAC_PRECOMP |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/* VARSEQINLEN = DPOVRD = assoclen */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_DPOVRD |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_DPOVRD |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* VARSEQOUTLEN = DPOVRD */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_DPOVRD |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_DPOVRD |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Skip AAD in output */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_SKIP | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_SKIP | CAAM_FIFOLDST_VLF);
 
 	/* Read AAD for HMAC (CLASS2, MSG) */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 |
-	    FIFOLD_TYPE_MSG | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLDST_VLF);
 
 	/* Class 1 OPERATION: cipher encrypt */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-	    sess->cipher_algtype | OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+	    sess->cipher_algtype | CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/* cryptlen = SEQINLEN + REG0(=0) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Read plaintext and write ciphertext (both classes, MSG1OUT2) */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_MESSAGE_DATA | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_MESSAGE_DATA | CAAM_FIFOLDST_VLF);
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_BOTH | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG1OUT2 | FIFOLD_TYPE_LASTBOTH);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_BOTH | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG1OUT2 | CAAM_FIFOLD_TYPE_LASTBOTH);
 
 	/* Write HMAC ICV */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_STORE | LDST_CLASS_2_CCB |
-	    LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
+	    CAAM_CMD_SEQ_STORE | CAAM_LDST_CLASS_2_CCB |
+	    CAAM_LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -447,92 +447,92 @@ caam_qi_eta_build_dec_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t *key_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL | HDR_SAVECTX);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL | CAAM_HDR_SAVECTX);
 
-	/* Key loading first (matches Linux QI ETA order) */
+	/* Key loading first (key before operation per SEC RM) */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_split_key_ptr(desc, sess->split_key_pad_len,
 	    sess->auth_key_dma.paddr);
 
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS1 | KEY_DEST_CLASS_REG |
-	    KEY_IMM | sess->enc_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS1 | CAAM_KEY_DEST_CLASS_REG |
+	    CAAM_KEY_IMM | sess->enc_klen);
 	caam_desc_add_key_imm(desc, sess->enc_key, sess->enc_klen);
 
 	caam_desc_set_jump_target(desc, key_jump);
 
 	/* Read assoclen → REG3 lower half → DPOVRD */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_LOAD | LDST_CLASS_DECO |
-	    LDST_SRCDST_WORD_DECO_MATH3 |
-	    (4 << LDST_OFFSET_SHIFT) | sizeof(uint32_t));
+	    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_DECO |
+	    CAAM_LDST_SRCDST_WORD_DECO_MATH3 |
+	    (4 << CAAM_LDST_OFFSET_SHIFT) | sizeof(uint32_t));
 	qi_shdesc_add_load_barrier(desc);
 
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_REG3 |
-	    MATH_DEST_DPOVRD | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_REG3 |
+	    CAAM_MATH_DEST_DPOVRD | CAAM_MATH_LEN_4BYTE);
 
 	/* Read IV from input stream → Class 1 context register */
 	if (sess->ivlen > 0) {
 		int ctx1_iv_off = 0;
 
-		if ((sess->cipher_algtype & OP_ALG_AAI_MASK) ==
-		    OP_ALG_AAI_CTR_MOD128)
+		if ((sess->cipher_algtype & CAAM_OP_ALG_AAI_MASK) ==
+		    CAAM_OP_ALG_AAI_CTR_MOD128)
 			ctx1_iv_off = 16;
 
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (ctx1_iv_off << LDST_OFFSET_SHIFT) | sess->ivlen);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (ctx1_iv_off << CAAM_LDST_OFFSET_SHIFT) | sess->ivlen);
 	}
 
 	/* --- Same processing body as JR ETA dec shdesc --- */
 
 	/* Class 2 OPERATION: HMAC verify */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
-	    sess->auth_algtype | OP_ALG_AAI_HMAC_PRECOMP |
-	    OP_ALG_AS_INITFINAL | OP_ALG_DECRYPT | OP_ALG_ICV_ON);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
+	    sess->auth_algtype | CAAM_OP_ALG_AAI_HMAC_PRECOMP |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_DECRYPT | CAAM_OP_ALG_ICV_ON);
 
 	/* VARSEQINLEN = DPOVRD */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_DPOVRD |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_DPOVRD |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* VARSEQOUTLEN = DPOVRD */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_ZERO | MATH_SRC1_DPOVRD |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_ZERO | CAAM_MATH_SRC1_DPOVRD |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Skip AAD in output */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_SKIP | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_SKIP | CAAM_FIFOLDST_VLF);
 
 	/* Read AAD for HMAC */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 |
-	    FIFOLD_TYPE_MSG | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLDST_VLF);
 
 	/* Class 1 OPERATION: cipher decrypt */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-	    sess->cipher_algtype | OP_ALG_AS_INITFINAL | OP_ALG_DECRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+	    sess->cipher_algtype | CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_DECRYPT);
 
 	/* cryptlen = SEQOUTLEN + REG0(=0) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQOUTLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQOUTLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQOUTLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQOUTLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/*
 	 * Read ciphertext and write plaintext.
@@ -541,15 +541,15 @@ caam_qi_eta_build_dec_shdesc(struct caam_session *sess, device_t dev,
 	 * hash for comparison.
 	 */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_MESSAGE_DATA | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_MESSAGE_DATA | CAAM_FIFOLDST_VLF);
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_BOTH | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LASTBOTH);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_BOTH | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LASTBOTH);
 
 	/* Read ICV for verification */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 |
-	    FIFOLD_TYPE_LAST2 | FIFOLD_TYPE_ICV | sess->icvlen);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 |
+	    CAAM_FIFOLD_TYPE_LAST2 | CAAM_FIFOLD_TYPE_ICV | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -565,7 +565,7 @@ static bool
 qi_cipher_is_xts(const struct caam_session *sess)
 {
 
-	return ((sess->cipher_algtype & OP_ALG_AAI_MASK) == OP_ALG_AAI_XTS);
+	return ((sess->cipher_algtype & CAAM_OP_ALG_AAI_MASK) == CAAM_OP_ALG_AAI_XTS);
 }
 
 int
@@ -576,15 +576,15 @@ caam_qi_cipher_build_enc_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t *key_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL);
 
-	/* Key loading first (matches Linux QI cipher order) */
+	/* Key loading first (key before operation per SEC RM) */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS1 | KEY_DEST_CLASS_REG |
-	    KEY_IMM | sess->enc_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS1 | CAAM_KEY_DEST_CLASS_REG |
+	    CAAM_KEY_IMM | sess->enc_klen);
 	caam_desc_add_key_imm(desc, sess->enc_key, sess->enc_klen);
 
 	if (qi_cipher_is_xts(sess)) {
@@ -592,9 +592,9 @@ caam_qi_cipher_build_enc_shdesc(struct caam_session *sess, device_t dev,
 			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00
 		};
 		caam_desc_add_word(desc,
-		    CMD_LOAD | LDST_CLASS_1_CCB | LDST_IMM |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (0x28 << LDST_OFFSET_SHIFT) | 8);
+		    CAAM_CMD_LOAD | CAAM_LDST_CLASS_1_CCB | CAAM_LDST_IMM |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (0x28 << CAAM_LDST_OFFSET_SHIFT) | 8);
 		caam_desc_add_key_imm(desc, sector_size, 8);
 	}
 
@@ -607,51 +607,51 @@ caam_qi_cipher_build_enc_shdesc(struct caam_session *sess, device_t dev,
 		 * into CONTEXT1 at offsets 0x20 and 0x30.
 		 */
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (0x20 << LDST_OFFSET_SHIFT) | 8);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (0x20 << CAAM_LDST_OFFSET_SHIFT) | 8);
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (0x30 << LDST_OFFSET_SHIFT) | 8);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (0x30 << CAAM_LDST_OFFSET_SHIFT) | 8);
 	} else if (sess->ivlen > 0) {
 		int ctx1_iv_off = 0;
 
-		if ((sess->cipher_algtype & OP_ALG_AAI_MASK) ==
-		    OP_ALG_AAI_CTR_MOD128)
+		if ((sess->cipher_algtype & CAAM_OP_ALG_AAI_MASK) ==
+		    CAAM_OP_ALG_AAI_CTR_MOD128)
 			ctx1_iv_off = 16;
 
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (ctx1_iv_off << LDST_OFFSET_SHIFT) | sess->ivlen);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (ctx1_iv_off << CAAM_LDST_OFFSET_SHIFT) | sess->ivlen);
 	}
 
 	/* OPERATION: cipher encrypt */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-	    sess->cipher_algtype | OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+	    sess->cipher_algtype | CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/* --- Same processing as JR cipher enc shdesc --- */
 
 	/* VARSEQOUTLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* VARSEQINLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Read plaintext and write ciphertext */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST1);
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_MESSAGE_DATA | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_MESSAGE_DATA | CAAM_FIFOLDST_VLF);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -666,15 +666,15 @@ caam_qi_cipher_build_dec_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t algtype;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL);
 
-	/* Key loading first (matches Linux QI cipher order) */
+	/* Key loading first (key before operation per SEC RM) */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_word(desc,
-	    CMD_KEY | KEY_CLASS1 | KEY_DEST_CLASS_REG |
-	    KEY_IMM | sess->enc_klen);
+	    CAAM_CMD_KEY | CAAM_KEY_CLASS1 | CAAM_KEY_DEST_CLASS_REG |
+	    CAAM_KEY_IMM | sess->enc_klen);
 	caam_desc_add_key_imm(desc, sess->enc_key, sess->enc_klen);
 
 	if (qi_cipher_is_xts(sess)) {
@@ -682,9 +682,9 @@ caam_qi_cipher_build_dec_shdesc(struct caam_session *sess, device_t dev,
 			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00
 		};
 		caam_desc_add_word(desc,
-		    CMD_LOAD | LDST_CLASS_1_CCB | LDST_IMM |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (0x28 << LDST_OFFSET_SHIFT) | 8);
+		    CAAM_CMD_LOAD | CAAM_LDST_CLASS_1_CCB | CAAM_LDST_IMM |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (0x28 << CAAM_LDST_OFFSET_SHIFT) | 8);
 		caam_desc_add_key_imm(desc, sector_size, 8);
 	}
 
@@ -697,74 +697,74 @@ caam_qi_cipher_build_dec_shdesc(struct caam_session *sess, device_t dev,
 		 * into CONTEXT1 at offsets 0x20 and 0x30.
 		 */
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (0x20 << LDST_OFFSET_SHIFT) | 8);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (0x20 << CAAM_LDST_OFFSET_SHIFT) | 8);
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (0x30 << LDST_OFFSET_SHIFT) | 8);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (0x30 << CAAM_LDST_OFFSET_SHIFT) | 8);
 	} else if (sess->ivlen > 0) {
 		int ctx1_iv_off = 0;
 
-		if ((sess->cipher_algtype & OP_ALG_AAI_MASK) ==
-		    OP_ALG_AAI_CTR_MOD128)
+		if ((sess->cipher_algtype & CAAM_OP_ALG_AAI_MASK) ==
+		    CAAM_OP_ALG_AAI_CTR_MOD128)
 			ctx1_iv_off = 16;
 
 		caam_desc_add_word(desc,
-		    CMD_SEQ_LOAD | LDST_CLASS_1_CCB |
-		    LDST_SRCDST_BYTE_CONTEXT |
-		    (ctx1_iv_off << LDST_OFFSET_SHIFT) | sess->ivlen);
+		    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_1_CCB |
+		    CAAM_LDST_SRCDST_BYTE_CONTEXT |
+		    (ctx1_iv_off << CAAM_LDST_OFFSET_SHIFT) | sess->ivlen);
 	}
 
 	/* OPERATION: cipher decrypt (with DK optimization for AES) */
 	algtype = sess->cipher_algtype;
-	if ((algtype & OP_ALG_ALGSEL_MASK) == OP_ALG_ALGSEL_AES &&
-	    (algtype & OP_ALG_AAI_MASK) != OP_ALG_AAI_CTR_MOD128) {
+	if ((algtype & CAAM_OP_ALG_ALGSEL_MASK) == CAAM_OP_ALG_ALGSEL_AES &&
+	    (algtype & CAAM_OP_ALG_AAI_MASK) != CAAM_OP_ALG_AAI_CTR_MOD128) {
 		uint32_t *dk_jump, *skip_jump;
 
 		dk_jump = caam_desc_add_jump(desc,
-		    JUMP_TEST_ALL | JUMP_COND_SHRD);
+		    CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 		caam_desc_add_word(desc,
-		    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-		    algtype | OP_ALG_AS_INITFINAL | OP_ALG_DECRYPT);
+		    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+		    algtype | CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_DECRYPT);
 
-		skip_jump = caam_desc_add_jump(desc, JUMP_TEST_ALL);
+		skip_jump = caam_desc_add_jump(desc, CAAM_JUMP_TEST_ALL);
 
 		caam_desc_set_jump_target(desc, dk_jump);
 		caam_desc_add_word(desc,
-		    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-		    algtype | OP_ALG_AS_INITFINAL |
-		    OP_ALG_DECRYPT | OP_ALG_AAI_DK);
+		    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+		    algtype | CAAM_OP_ALG_AS_INITFINAL |
+		    CAAM_OP_ALG_DECRYPT | CAAM_OP_ALG_AAI_DK);
 
 		caam_desc_set_jump_target(desc, skip_jump);
 	} else {
 		caam_desc_add_word(desc,
-		    CMD_OPERATION | OP_TYPE_CLASS1_ALG |
-		    algtype | OP_ALG_AS_INITFINAL | OP_ALG_DECRYPT);
+		    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS1_ALG |
+		    algtype | CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_DECRYPT);
 	}
 
 	/* --- Same processing as JR cipher dec shdesc --- */
 
 	/* VARSEQOUTLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* VARSEQINLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Read ciphertext and write plaintext */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS1 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST1);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS1 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST1);
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_MESSAGE_DATA | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_MESSAGE_DATA | CAAM_FIFOLDST_VLF);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -785,11 +785,11 @@ caam_qi_null_hmac_build_enc_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t *key_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL | HDR_SAVECTX);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL | CAAM_HDR_SAVECTX);
 
-	/* Key loading first (matches Linux QI null+hmac order) */
+	/* Key loading first (key before operation per SEC RM) */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_split_key_ptr(desc, sess->split_key_pad_len,
 	    sess->auth_key_dma.paddr);
@@ -798,44 +798,44 @@ caam_qi_null_hmac_build_enc_shdesc(struct caam_session *sess, device_t dev,
 
 	/* Read assoclen from input stream → REG3 lower half */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_LOAD | LDST_CLASS_DECO |
-	    LDST_SRCDST_WORD_DECO_MATH3 |
-	    (4 << LDST_OFFSET_SHIFT) | sizeof(uint32_t));
+	    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_DECO |
+	    CAAM_LDST_SRCDST_WORD_DECO_MATH3 |
+	    (4 << CAAM_LDST_OFFSET_SHIFT) | sizeof(uint32_t));
 	qi_shdesc_add_load_barrier(desc);
 
 	/* --- Same processing as JR null_hmac enc shdesc --- */
 
 	/* OPERATION: HMAC encrypt */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
-	    sess->auth_algtype | OP_ALG_AAI_HMAC_PRECOMP |
-	    OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
+	    sess->auth_algtype | CAAM_OP_ALG_AAI_HMAC_PRECOMP |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/* VARSEQINLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* VARSEQOUTLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Skip passthrough in output */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_SKIP | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_SKIP | CAAM_FIFOLDST_VLF);
 
 	/* Feed all data to HMAC */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST2);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST2);
 
 	/* Write HMAC ICV */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_STORE | LDST_CLASS_2_CCB |
-	    LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
+	    CAAM_CMD_SEQ_STORE | CAAM_LDST_CLASS_2_CCB |
+	    CAAM_LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -849,11 +849,11 @@ caam_qi_null_hmac_build_dec_shdesc(struct caam_session *sess, device_t dev,
 	uint32_t *key_jump;
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL | HDR_SAVECTX);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL | CAAM_HDR_SAVECTX);
 
-	/* Key loading first (matches Linux QI null+hmac order) */
+	/* Key loading first (key before operation per SEC RM) */
 	key_jump = caam_desc_add_jump(desc,
-	    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+	    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 	caam_desc_add_split_key_ptr(desc, sess->split_key_pad_len,
 	    sess->auth_key_dma.paddr);
@@ -862,43 +862,43 @@ caam_qi_null_hmac_build_dec_shdesc(struct caam_session *sess, device_t dev,
 
 	/* Read assoclen from input stream → REG3 lower half */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_LOAD | LDST_CLASS_DECO |
-	    LDST_SRCDST_WORD_DECO_MATH3 |
-	    (4 << LDST_OFFSET_SHIFT) | sizeof(uint32_t));
+	    CAAM_CMD_SEQ_LOAD | CAAM_LDST_CLASS_DECO |
+	    CAAM_LDST_SRCDST_WORD_DECO_MATH3 |
+	    (4 << CAAM_LDST_OFFSET_SHIFT) | sizeof(uint32_t));
 	qi_shdesc_add_load_barrier(desc);
 
 	/* --- Same processing as JR null_hmac dec shdesc --- */
 
 	/* OPERATION: HMAC verify */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
-	    sess->auth_algtype | OP_ALG_AAI_HMAC_PRECOMP |
-	    OP_ALG_AS_INITFINAL | OP_ALG_DECRYPT | OP_ALG_ICV_ON);
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
+	    sess->auth_algtype | CAAM_OP_ALG_AAI_HMAC_PRECOMP |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_DECRYPT | CAAM_OP_ALG_ICV_ON);
 
 	/* Data length = SEQOUTLEN (excludes ICV) */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQOUTLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQOUTLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQOUTLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQOUTLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQOUTLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQOUTLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Skip passthrough in output */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_STORE | FIFOST_TYPE_SKIP | FIFOLDST_VLF);
+	    CAAM_CMD_SEQ_FIFO_STORE | CAAM_FIFOST_TYPE_SKIP | CAAM_FIFOLDST_VLF);
 
 	/* Feed data to HMAC (no LAST2 yet — ICV follows) */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG);
 
 	/* Read ICV for verification */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 |
-	    FIFOLD_TYPE_ICV | FIFOLD_TYPE_LAST2 | sess->icvlen);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 |
+	    CAAM_FIFOLD_TYPE_ICV | CAAM_FIFOLD_TYPE_LAST2 | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
@@ -921,11 +921,11 @@ caam_qi_hash_build_shdesc(struct caam_session *sess, device_t dev,
 	is_hmac = (sess->alg_type == CAAM_ALG_HMAC);
 
 	desc = qi_shdesc_ptr(ctx);
-	caam_shdesc_init(desc, HDR_SHARE_SERIAL);
+	caam_shdesc_init(desc, CAAM_HDR_SHARE_SERIAL);
 
 	if (is_hmac) {
 		key_jump = caam_desc_add_jump(desc,
-		    JUMP_JSL | JUMP_TEST_ALL | JUMP_COND_SHRD);
+		    CAAM_JUMP_JSL | CAAM_JUMP_TEST_ALL | CAAM_JUMP_COND_SHRD);
 
 		caam_desc_add_split_key_ptr(desc, sess->split_key_pad_len,
 		    sess->auth_key_dma.paddr);
@@ -937,26 +937,26 @@ caam_qi_hash_build_shdesc(struct caam_session *sess, device_t dev,
 
 	/* OPERATION: hash/HMAC compute */
 	caam_desc_add_word(desc,
-	    CMD_OPERATION | OP_TYPE_CLASS2_ALG |
+	    CAAM_CMD_OPERATION | CAAM_OP_TYPE_CLASS2_ALG |
 	    sess->auth_algtype |
-	    (is_hmac ? OP_ALG_AAI_HMAC_PRECOMP : 0) |
-	    OP_ALG_AS_INITFINAL | OP_ALG_ENCRYPT);
+	    (is_hmac ? CAAM_OP_ALG_AAI_HMAC_PRECOMP : 0) |
+	    CAAM_OP_ALG_AS_INITFINAL | CAAM_OP_ALG_ENCRYPT);
 
 	/* VARSEQINLEN = SEQINLEN */
 	caam_desc_add_word(desc,
-	    CMD_MATH | MATH_FUN_ADD |
-	    MATH_SRC0_SEQINLEN | MATH_SRC1_REG0 |
-	    MATH_DEST_VARSEQINLEN | MATH_LEN_4BYTE);
+	    CAAM_CMD_MATH | CAAM_MATH_FUN_ADD |
+	    CAAM_MATH_SRC0_SEQINLEN | CAAM_MATH_SRC1_REG0 |
+	    CAAM_MATH_DEST_VARSEQINLEN | CAAM_MATH_LEN_4BYTE);
 
 	/* Feed all data to Class 2 */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_FIFO_LOAD | FIFOLD_CLASS_CLASS2 | FIFOLDST_VLF |
-	    FIFOLD_TYPE_MSG | FIFOLD_TYPE_LAST2);
+	    CAAM_CMD_SEQ_FIFO_LOAD | CAAM_FIFOLD_CLASS_CLASS2 | CAAM_FIFOLDST_VLF |
+	    CAAM_FIFOLD_TYPE_MSG | CAAM_FIFOLD_TYPE_LAST2);
 
 	/* Store digest */
 	caam_desc_add_word(desc,
-	    CMD_SEQ_STORE | LDST_CLASS_2_CCB |
-	    LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
+	    CAAM_CMD_SEQ_STORE | CAAM_LDST_CLASS_2_CCB |
+	    CAAM_LDST_SRCDST_BYTE_CONTEXT | sess->icvlen);
 
 	ctx->shdesc_len = caam_shdesc_len(desc);
 	return (0);
