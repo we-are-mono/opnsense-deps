@@ -1,0 +1,29 @@
+From 7fccb6aef52c340611715f918defeb286c95ae72 Mon Sep 17 00:00:00 2001
+From: Tomaz Zaman <tomaz@mono.si>
+Date: Fri, 3 Apr 2026 16:54:29 +0200
+Subject: [PATCH] interfaces: restart CMM on interface reassignment
+
+When interfaces are reassigned, CDX hardware flow tables retain stale
+entries from the old interface mapping. CMM catches address changes via
+route socket events, but reassignment can happen without IP changes.
+Trigger a CMM restart via configd after saving interface assignments
+to flush stale offload state and re-discover interfaces.
+---
+ src/www/interfaces_assign.php | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/www/interfaces_assign.php b/src/www/interfaces_assign.php
+index 98cabfa97..81e3917c0 100644
+--- a/src/www/interfaces_assign.php
++++ b/src/www/interfaces_assign.php
+@@ -285,6 +285,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+             if ($changes > 0) {
+                 filter_configure();
+             }
++            configd_run('cmm restart', true);
+ 
+             header(url_safe('Location: /interfaces_assign.php'));
+             exit;
+-- 
+2.47.3
+
