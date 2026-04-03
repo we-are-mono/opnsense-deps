@@ -254,6 +254,8 @@ package: all
 	# OPNsense plugin files (hwmon dashboard widget)
 	cp -R ${OPSDIR}/plugins/hwmon/src/opnsense/ ${PKG_STAGEDIR}/usr/local/opnsense/
 	chmod 755 ${PKG_STAGEDIR}/usr/local/opnsense/scripts/hwmon/sensors.py
+	# CMM configd action (restart on interface reassignment)
+	install -m 644 ${PKG_CONFDIR}/actions_cmm.conf ${PKG_STAGEDIR}/usr/local/opnsense/service/conf/actions.d/
 	# Generate manifest with version
 	sed 's/%%VERSION%%/${PKG_VERSION}/' ${PKG_METADIR}/+MANIFEST \
 	    > ${PKG_STAGEDIR}/+MANIFEST
