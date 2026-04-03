@@ -28,6 +28,7 @@
 @dir /usr/local/opnsense/scripts/hwmon
 /usr/local/opnsense/scripts/hwmon/sensors.py
 /usr/local/opnsense/service/conf/actions.d/actions_hwmon.conf
+/usr/local/opnsense/service/conf/actions.d/actions_cmm.conf
 /usr/local/opnsense/mvc/app/controllers/OPNsense/Hwmon/Api/SensorsController.php
 /usr/local/opnsense/mvc/app/models/OPNsense/Hwmon/ACL/ACL.xml
 /usr/local/opnsense/www/js/widgets/Hwmon.js
