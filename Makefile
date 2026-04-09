@@ -220,6 +220,7 @@ package: all
 	@mkdir -p ${PKG_STAGEDIR}/etc/fmc/config
 	@mkdir -p ${PKG_STAGEDIR}/usr/local/etc/rc.d
 	@mkdir -p ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early
+	@mkdir -p ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/stop
 	# Kernel modules
 	install -m 644 ${DISTDIR}/cdx.ko ${PKG_STAGEDIR}/boot/modules/
 	install -m 644 ${DISTDIR}/fci.ko ${PKG_STAGEDIR}/boot/modules/
@@ -251,6 +252,8 @@ package: all
 	install -m 755 ${PKG_RCDDIR}/mwifiex_uap ${PKG_STAGEDIR}/usr/local/etc/rc.d/
 	# rc.syshook early scripts
 	install -m 755 ${PKG_RCDDIR}/01-mono-modules ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/early/
+	# rc.syshook stop scripts
+	install -m 755 ${PKG_RCDDIR}/20-kernel-update ${PKG_STAGEDIR}/usr/local/etc/rc.syshook.d/stop/
 	# OPNsense plugin files (hwmon dashboard widget)
 	cp -R ${OPSDIR}/plugins/hwmon/src/opnsense/ ${PKG_STAGEDIR}/usr/local/opnsense/
 	chmod 755 ${PKG_STAGEDIR}/usr/local/opnsense/scripts/hwmon/sensors.py
