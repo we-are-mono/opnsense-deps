@@ -25,6 +25,7 @@
 /usr/local/etc/rc.d/fand
 /usr/local/etc/rc.d/mwifiex_uap
 /usr/local/etc/rc.syshook.d/early/01-mono-modules
+/usr/local/etc/rc.syshook.d/stop/20-kernel-update
 @dir /usr/local/opnsense/scripts/hwmon
 /usr/local/opnsense/scripts/hwmon/sensors.py
 /usr/local/opnsense/service/conf/actions.d/actions_hwmon.conf

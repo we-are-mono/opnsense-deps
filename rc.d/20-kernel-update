@@ -1,0 +1,10 @@
+#!/bin/sh
+
+# move kernel to FAT partition after kernel update
+if [ -f /boot/kernel/kernel.bin ]; then
+    INSTALLED_KERNEL=$(cat /usr/local/opnsense/version/kernel)
+    if [ "${INSTALLED_KERNEL}" != "26.1.3" ]; then
+        cp /boot/msdos/kernel.img /boot/msdos/kernel.old
+        mv /boot/kernel/kernel.bin /boot/msdos/kernel.img
+    fi
+fi
