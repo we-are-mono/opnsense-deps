@@ -2,8 +2,8 @@
 
 """
 Hardware sensor reader for Mono Gateway dashboard widget.
-Discovers and reads INA2xx power monitors, EMC2302 fan controllers,
-and TMU temperature sensors via sysctl.
+Discovers and reads INA2xx power monitors and EMC2302 fan controllers
+via sysctl.
 """
 
 import json
@@ -95,8 +95,10 @@ def parse_fans(raw):
             # Skip fans with 0 RPM (stalled or not connected)
             if rpm == 0:
                 continue
+            # The board has a single SoC fan on fan0; give it a friendly name.
+            label = 'SoC Fan' if fan_id == 'fan0' else fan_id
             fans.append({
-                'label': fan_id,
+                'label': label,
                 'rpm': rpm,
                 'pwm': pwm_pct,
                 'fault': fault != 0,
@@ -104,37 +106,13 @@ def parse_fans(raw):
     return fans
 
 
-def parse_temperatures(raw):
-    """Parse hw.temperature.* into temperature list."""
-    temps = []
-    for key, val in sorted(raw.items()):
-        if not key.startswith('hw.temperature.'):
-            continue
-        name = key.replace('hw.temperature.', '')
-        # Value is like "47.0C"
-        temp_str = val.rstrip('C').strip()
-        try:
-            temp = float(temp_str)
-        except ValueError:
-            continue
-        # Pretty-print the name: core-cluster -> Core Cluster
-        label = name.replace('-', ' ').replace('_', ' ').title()
-        temps.append({
-            'label': label,
-            'value': temp,
-        })
-    return temps
-
-
 if __name__ == '__main__':
     power_raw = sysctl_tree('dev.ina2xx')
     fan_raw = sysctl_tree('dev.emc2302')
-    temp_raw = sysctl_tree('hw.temperature')
 
     result = {
         'power': parse_power(power_raw),
         'fans': parse_fans(fan_raw),
-        'temperatures': parse_temperatures(temp_raw),
     }
 
     print(json.dumps(result))
