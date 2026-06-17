@@ -127,19 +127,19 @@ output, keeping kernel version strings and module paths clean.
 
 ### 3. Prefetch base and packages
 
-Official OPNsense mirrors only publish amd64 sets. For aarch64, use walker.earth.
-Check https://opnsense-update.walker.earth/FreeBSD:14:aarch64/26.1/sets/ for available versions.
+Official OPNsense mirrors only publish amd64 sets. For aarch64, use opnsense.mono.si.
+Check https://opnsense.mono.si/FreeBSD:14:aarch64/26.1/sets/ for available versions.
 
 ```
 export VERSION=26.1.1   # use latest available on the mirror
 
-sudo make -C /usr/tools prefetch-base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
+sudo make -C /usr/tools prefetch-base DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools MIRRORS=https://opnsense.mono.si VERSION=$VERSION
 
 # The build system expects a -GATEWAY suffix on the base set
 cd /usr/local/opnsense/build/26.1/aarch64/sets
 sudo mv base-${VERSION}-aarch64.txz base-${VERSION}-aarch64-GATEWAY.txz
 
-sudo make -C /usr/tools prefetch-packages DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools MIRRORS=https://opnsense-update.walker.earth VERSION=$VERSION
+sudo make -C /usr/tools prefetch-packages DEVICE=GATEWAY SETTINGS=26.1 TOOLSDIR=/usr/tools MIRRORS=https://opnsense.mono.si VERSION=$VERSION
 ```
 
 This skips `make base`, `make ports`, `make core`, and `make plugins` (no cross-compilation needed).

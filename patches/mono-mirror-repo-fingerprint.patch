@@ -1,0 +1,177 @@
+From 92ae647baa14b27422a9a37e2e823054327d2ae4 Mon Sep 17 00:00:00 2001
+From: Maurice Walker <maurice@walker.earth>
+Date: Wed, 17 Jun 2026 02:38:55 +0200
+Subject: [PATCH] Add Mono CORE_PACKAGESITE, mirror, repo and fingerprint,
+ remove amd64 mirrors
+
+---
+ Mk/version.mk                                 |  2 +-
+ plist                                         |  2 +
+ .../trusted/opnsense.mono.si.20260305         |  2 +
+ src/etc/pkg/repos/MonoGateway.conf.shadow.in  |  7 ++
+ .../OPNsense/Core/repositories/opnsense.xml   | 86 +------------------
+ 5 files changed, 15 insertions(+), 84 deletions(-)
+ create mode 100644 src/etc/pkg/fingerprints/OPNsense/trusted/opnsense.mono.si.20260305
+ create mode 100644 src/etc/pkg/repos/MonoGateway.conf.shadow.in
+
+diff --git a/Mk/version.mk b/Mk/version.mk
+index 85c078b1aac..dba5004963f 100644
+--- a/Mk/version.mk
++++ b/Mk/version.mk
+@@ -36,7 +36,7 @@ CORE_CONFLICTS?=firewall wireguard wireguard-go
+ CORE_COMMENT?=		${CORE_PRODUCT} ${CORE_TYPE} release
+ CORE_MAINTAINER?=	project@opnsense.org
+ CORE_ORIGIN?=		opnsense/${CORE_NAME}
+-CORE_PACKAGESITE?=	https://pkg.opnsense.org
++CORE_PACKAGESITE?=	https://opnsense.mono.si
+ CORE_PRODUCT?=		OPNsense
+ CORE_WWW?=		https://opnsense.org/
+ CORE_USER?=		wwwonly
+diff --git a/plist b/plist
+index 1b059f01119..d871d4328e4 100644
+--- a/plist
++++ b/plist
+@@ -80,6 +80,7 @@
+ /usr/local/etc/pkg/fingerprints/OPNsense/revoked/pkg.opnsense.org.20240611
+ /usr/local/etc/pkg/fingerprints/OPNsense/revoked/pkg.opnsense.org.20241217
+ /usr/local/etc/pkg/fingerprints/OPNsense/revoked/pkg.opnsense.org.20250710
++/usr/local/etc/pkg/fingerprints/OPNsense/trusted/opnsense.mono.si.20260305
+ /usr/local/etc/pkg/fingerprints/OPNsense/trusted/pkg.opnsense.org.20260120
+ /usr/local/etc/rc
+ /usr/local/etc/rc.bootup
+@@ -2571,5 +2572,6 @@
+ @sample /usr/local/etc/bogonsv6.sample
+ @sample /usr/local/etc/config.xml.sample
+ @shadow /usr/local/etc/pkg/repos/FreeBSD.conf.sample
++@shadow /usr/local/etc/pkg/repos/MonoGateway.conf.sample
+ @shadow /usr/local/etc/pkg/repos/OPNsense-aux.conf.sample
+ @shadow /usr/local/etc/pkg/repos/OPNsense.conf.sample
+diff --git a/src/etc/pkg/fingerprints/OPNsense/trusted/opnsense.mono.si.20260305 b/src/etc/pkg/fingerprints/OPNsense/trusted/opnsense.mono.si.20260305
+new file mode 100644
+index 00000000000..af6301792bd
+--- /dev/null
++++ b/src/etc/pkg/fingerprints/OPNsense/trusted/opnsense.mono.si.20260305
+@@ -0,0 +1,2 @@
++function: "sha256"
++fingerprint: "ed8c6cdf38383853b0d6f4c6bf70efa1793d76a57e78317a53653404bcabd931"
+diff --git a/src/etc/pkg/repos/MonoGateway.conf.shadow.in b/src/etc/pkg/repos/MonoGateway.conf.shadow.in
+new file mode 100644
+index 00000000000..4947e72a217
+--- /dev/null
++++ b/src/etc/pkg/repos/MonoGateway.conf.shadow.in
+@@ -0,0 +1,7 @@
++MonoGateway: {
++  fingerprints: "/usr/local/etc/pkg/fingerprints/OPNsense",
++  url: "%%CORE_PACKAGESITE%%/${ABI}/%%CORE_ABI%%/mono",
++  signature_type: "fingerprints",
++  priority: 11,
++  enabled: yes
++}
+diff --git a/src/opnsense/mvc/app/models/OPNsense/Core/repositories/opnsense.xml b/src/opnsense/mvc/app/models/OPNsense/Core/repositories/opnsense.xml
+index da4f293ca6f..1b791258e3b 100644
+--- a/src/opnsense/mvc/app/models/OPNsense/Core/repositories/opnsense.xml
++++ b/src/opnsense/mvc/app/models/OPNsense/Core/repositories/opnsense.xml
+@@ -5,100 +5,20 @@
+             <description>(default)</description>
+         </mirror>
+         <mirror>
+-            <url>https://mirrors.dotsrc.org/opnsense</url>
+-            <description>Aalborg University (HTTPS, Aalborg, DK)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://opnsense.aivian.org</url>
+-            <description>Aivian (HTTPS, Shaoxing, CN)</description>
+-        </mirror>
+-        <mirror has_subscription="true">
+-            <url>https://opnsense-update.deciso.com</url>
+-            <description>Deciso (HTTPS, Commercial)</description>
+-        </mirror>
+-        <mirror has_subscription="true">
+-            <url>https://nl.opnsense-update.deciso.com</url>
+-            <description>Deciso (HTTPS, NL, Commercial)</description>
+-        </mirror>
+-        <mirror has_subscription="true">
+-            <url>https://us-east.opnsense-update.deciso.com</url>
+-            <description>Deciso (HTTPS, US, Commercial)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://opnsense.c0urier.net</url>
+-            <description>c0urier.net (HTTPS, Horsens, DK)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirror.cloudfence.com.br/opnsense</url>
+-            <description>Cloudfence (HTTPS, Sao Paulo, Brazil)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://opnsense-mirror.hiho.ch</url>
+-            <description>HiHo (HTTPS, Zurich, CH)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirror-opnsense.serverbase.ch</url>
+-            <description>ServerBase AG (HTTPS, Zurich, CH)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirror.ams1.nl.leaseweb.net/opnsense</url>
+-            <description>LeaseWeb (HTTPS, Amsterdam, NL)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirror.fra10.de.leaseweb.net/opnsense</url>
+-            <description>LeaseWeb (HTTPS, Frankfurt, DE)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirror.sfo12.us.leaseweb.net/opnsense</url>
+-            <description>LeaseWeb (HTTPS, San Francisco, US)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirror.wdc1.us.leaseweb.net/opnsense</url>
+-            <description>LeaseWeb (HTTPS, Washington, D.C., US)</description>
+-        </mirror>
+-        <mirror>
+-           <url>http://quantum-mirror.hu/mirrors/pub/opnsense</url>
+-           <description>Quantum Mirror (HTTP, Hungary, HU)</description>
+-        </mirror>
+-        <mirror>
+-            <url>http://mirror.marwan.ma/opnsense/</url>
+-            <description>MARWAN (HTTP, Rabat, MA)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://mirrors.nycbug.org/pub/opnsense</url>
+-            <description>NYC*BUG (HTTPS, New York, US)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://pkg.opnsense.org</url>
+-            <description>OPNsense (HTTPS, Amsterdam, NL)</description>
+-        </mirror>
+-        <mirror>
+-            <url>https://www.mirrorservice.org/sites/opnsense.org</url>
+-            <description>University of Kent (HTTPS, Kent, GB)</description>
+-        </mirror>
+-        <mirror>
+-            <url>http://mirror.venturasystems.tech/opnsense</url>
+-            <description>Ventura Systems (HTTP, Medellin, CO)</description>
++            <url>https://opnsense.mono.si</url>
++            <description>Mono (HTTPS, Nuremberg, DE)</description>
+         </mirror>
+     </mirrors>
+     <flavours>
+-        <flavour has_subscription="true">
++        <flavour>
+             <name/>
+             <description>(default)</description>
+         </flavour>
+     </flavours>
+     <families>
+-        <family has_subscription="true">
+-            <name>business</name>
+-            <description>Business</description>
+-        </family>
+         <family>
+             <name/>
+             <description>Community</description>
+         </family>
+-        <family>
+-            <name>devel</name>
+-            <description>Development</description>
+-        </family>
+     </families>
+ </firmware>

@@ -27,6 +27,7 @@ VENDORDIR?=	${OPSDIR}/_vendor
 # Source and tooling paths (standard OPNsense layout)
 SRCDIR?=	/usr/src
 TOOLSDIR?=	/usr/tools
+COREDIR?=	/usr/core
 SYSROOT?=	/usr/obj${SRCDIR}/arm64.aarch64/tmp
 KERNBUILDDIR?=	/usr/obj${SRCDIR}/arm64.aarch64/sys/GATEWAY
 
@@ -282,6 +283,16 @@ image:
 	@test -d ${SRCDIR}/.git || git clone https://github.com/we-are-mono/opnsense-src.git -b ${OPS_BRANCH} ${SRCDIR}
 	@test -d ${TOOLSDIR}/.git || git clone https://github.com/opnsense/tools.git ${TOOLSDIR}
 	@cp -n ${OPSDIR}/config/GATEWAY.conf ${TOOLSDIR}/device/ 2>/dev/null || true
+	# --- Apply opnsense-core patches ---
+	local PATCHDIR="${OPSDIR}/patches"
+	if [ -d "${PATCHDIR}" ]; then
+		for p in "${PATCHDIR}"/*.patch; do
+			[ -f "${p}" ] || continue
+			echo ">>> Applying patch: $(basename ${p})"
+			patch -d "${COREDIR}" -p1 -V none < "${p}"
+		done
+		git -C "${COREDIR}" commit -a -m "Mono Gateway customizations"
+	fi
 	cd ${SRCDIR} && git checkout ${OPS_BRANCH} && git pull || echo "    git pull skipped (NFS or no remote)"
 	@echo "==> Step 2: Building kernel (clean)"
 	rm -f ${SETSDIR}/kernel-*-GATEWAY.txz
