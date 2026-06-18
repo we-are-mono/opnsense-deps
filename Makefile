@@ -53,7 +53,7 @@ DISTDIR?=	${OPSDIR}/dist
 # libxml2 aarch64 package for cross-compilation sysroot (fmc links against it).
 # pkg.FreeBSD.org blocks directory listings, so we fetch by exact filename.
 # Update this when the FreeBSD ports tree bumps libxml2.
-LIBXML2_PKG?=	libxml2-2.15.2.pkg
+LIBXML2_PKG?=	libxml2-2.15.3.pkg
 LIBXML2_URL=	https://pkg.FreeBSD.org/FreeBSD:14:aarch64/latest/All/${LIBXML2_PKG}
 
 # Package version: derived from git tags (e.g., tag "26.1.2" + 3 commits = "26.1.2_3")
@@ -258,6 +258,9 @@ package: all
 	# OPNsense plugin files (hwmon dashboard widget)
 	cp -R ${OPSDIR}/plugins/hwmon/src/opnsense/ ${PKG_STAGEDIR}/usr/local/opnsense/
 	chmod 755 ${PKG_STAGEDIR}/usr/local/opnsense/scripts/hwmon/sensors.py
+	# OPNsense plugin files (SFP module info)
+	cp -R ${OPSDIR}/plugins/sfp/src/opnsense/ ${PKG_STAGEDIR}/usr/local/opnsense/
+	chmod 755 ${PKG_STAGEDIR}/usr/local/opnsense/scripts/interfaces/sfp_info.py
 	# CMM configd action (restart on interface reassignment)
 	install -m 644 ${PKG_CONFDIR}/actions_cmm.conf ${PKG_STAGEDIR}/usr/local/opnsense/service/conf/actions.d/
 	# Generate manifest with version
