@@ -53,24 +53,16 @@ export default class Hwmon extends BaseTableWidget {
             headerPosition: 'left',
         });
 
-        let $tempHeader = $(`<div class="hwmon-section" id="hwmon-temp-section">
-            <b><i class="fa fa-thermometer-half"></i> ${this.translations.temperatures}</b>
-        </div>`);
-        let $tempTable = this.createTable('hwmon-temps', {
-            headerPosition: 'left',
-        });
-
-        $container.append($powerHeader, $powerTable, $fanHeader, $fanTable, $tempHeader, $tempTable);
+        $container.append($powerHeader, $powerTable, $fanHeader, $fanTable);
         return $container;
     }
 
     async onWidgetTick() {
         const data = await this.ajaxCall('/api/hwmon/sensors/status');
 
-        if (!data || (!data.power?.length && !data.fans?.length && !data.temperatures?.length)) {
+        if (!data || (!data.power?.length && !data.fans?.length)) {
             $('#hwmon-power-section').hide();
             $('#hwmon-fan-section').hide();
-            $('#hwmon-temp-section').hide();
             $('#hwmon-power').html(`<div style="margin: 1em;">${this.translations.nosensors}</div>`);
             return;
         }
@@ -105,22 +97,6 @@ export default class Hwmon extends BaseTableWidget {
             super.updateTable('hwmon-fans', fanRows);
         } else {
             $('#hwmon-fan-section').hide();
-        }
-
-        // Temperatures
-        if (data.temperatures?.length) {
-            $('#hwmon-temp-section').show();
-            let tempRows = [];
-            data.temperatures.forEach(t => {
-                let color = t.value >= 80 ? 'text-danger' : (t.value >= 70 ? 'text-warning' : '');
-                let display = color
-                    ? `<span class="${color}">${t.value.toFixed(1)}&deg;C</span>`
-                    : `${t.value.toFixed(1)}&deg;C`;
-                tempRows.push([t.label, display]);
-            });
-            super.updateTable('hwmon-temps', tempRows);
-        } else {
-            $('#hwmon-temp-section').hide();
         }
     }
 }

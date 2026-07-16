@@ -8,7 +8,6 @@
             <title>Hardware Monitor</title>
             <power>Power</power>
             <fans>Fans</fans>
-            <temperatures>Temperatures</temperatures>
             <nosensors>No hardware sensors detected.</nosensors>
         </translations>
     </hwmon>

@@ -1,0 +1,76 @@
+From: FOG_Yamato <contact@cybersnets.com>
+Subject: [PATCH] diagnostics: friendly names for SoC/board thermal sensors
+
+The LS1046A TMU and TMP431 board sensors expose readings under
+hw.temperature.* (e.g. hw.temperature.core-cluster). The Thermal Sensors
+dashboard widget labels each bar as "${type_translated} ${device_seq}";
+these sensors fall through to "Other" with a numeric sequence of 0 (no
+digits in the name), so every sensor renders as the identical "Other 0".
+
+Map hw.temperature.* leaves to friendly labels and blank the numeric
+sequence so the widget shows just the name (e.g. "Core Cluster"). Sensor
+selection still keys off the unique device field.
+
+Applies to opnsense/core stable/26.1. Verify on the build server with:
+    git -C /usr/core apply --check patches/thermal-sensors-friendly-names.patch
+---
+ .../OPNsense/Diagnostics/Api/SystemController.php  | 25 +++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/src/opnsense/mvc/app/controllers/OPNsense/Diagnostics/Api/SystemController.php b/src/opnsense/mvc/app/controllers/OPNsense/Diagnostics/Api/SystemController.php
+--- a/src/opnsense/mvc/app/controllers/OPNsense/Diagnostics/Api/SystemController.php
++++ b/src/opnsense/mvc/app/controllers/OPNsense/Diagnostics/Api/SystemController.php
+@@ -233,26 +233,49 @@ class SystemController extends ApiControllerBase
+         /* read temperatures individually from previously derived sensors */
+         $sensors = explode("\n", $backend->configdRun('system sensors'));
+         $temps = json_decode($backend->configdpRun('system sysctl values', join(',', $sensors)), true);
+
++        /* friendly labels for SoC/board thermal sensors (hw.temperature.*) */
++        $soc_labels = [
++            'core-cluster' => 'Core Cluster',
++            'ddr-controller' => 'DDR Controller',
++            'fman' => 'FMan',
++            'sec' => 'SEC',
++            'serdes' => 'SerDes',
++            'cpu-board-local' => 'CPU Ambient',
++            'cpu-board-remote' => 'CPU Die',
++            'network-board-local' => 'Board Ambient',
++            'network-board-remote' => 'Network Die',
++        ];
++
+         foreach ($temps as $name => $value) {
+             $tempItem = [];
+             $tempItem['device'] = $name;
+             $tempItem['device_seq'] = (int)filter_var($tempItem['device'], FILTER_SANITIZE_NUMBER_INT);
+             $tempItem['temperature'] = trim(str_replace('C', '', $value));
+             $tempItem['type_translated'] = gettext('Other');
+             $tempItem['type'] = 'other';
+
+             /* try to categorize a few of the readings just for labels */
+-            if (str_starts_with($tempItem['device'], 'hw.acpi.')) {
++            if (str_starts_with($tempItem['device'], 'hw.temperature.')) {
++                $leaf = substr($tempItem['device'], strlen('hw.temperature.'));
++                if (isset($soc_labels[$leaf])) {
++                    $tempItem['type_translated'] = $soc_labels[$leaf];
++                } else {
++                    $tempItem['type_translated'] = ucwords(str_replace(['-', '_'], ' ', $leaf));
++                }
++                $tempItem['type'] = 'soc';
++                /* blank the numeric sequence so the widget shows just the name */
++                $tempItem['device_seq'] = '';
++            } elseif (str_starts_with($tempItem['device'], 'hw.acpi.')) {
+                 $tempItem['type_translated'] = gettext('Zone');
+                 $tempItem['type'] = 'zone';
+             } elseif (str_starts_with($tempItem['device'], 'dev.amdtemp.')) {
+                 $tempItem['type_translated'] = gettext('AMD');
+                 $tempItem['type'] = 'amd';
+             } elseif (str_starts_with($tempItem['device'], 'dev.pchtherm.')) {
+                 $tempItem['type_translated'] = gettext('Platform');
+                 $tempItem['type'] = 'platform';
+             } elseif (str_starts_with($tempItem['device'], 'dev.cpu.')) {
+                 $tempItem['type_translated'] = gettext('CPU');
+                 $tempItem['type'] = 'cpu';
+             }
+
+             $result[] = $tempItem;
+         }

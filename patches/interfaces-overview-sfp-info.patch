@@ -1,0 +1,33 @@
+From: FOG_Yamato <contact@cybersnets.com>
+Subject: [PATCH] interfaces: show SFP module info in the details popup
+
+For SFP+ ports the platform exposes the module's decoded SFF-8472 data via
+`configctl sfp info <if>` (backed by dev.dtsec.N.sfp_eeprom). Inject the
+result as an `sfp` key in the interface details response; the existing
+details dialog auto-renders an object-valued key as a sub-table. The call
+returns {} for non-SFP interfaces, so it is safe to run unconditionally.
+
+Applied to the installed tree under /usr/local with: patch -p2
+---
+ src/opnsense/mvc/app/controllers/OPNsense/Interfaces/Api/OverviewController.php | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/opnsense/mvc/app/controllers/OPNsense/Interfaces/Api/OverviewController.php b/src/opnsense/mvc/app/controllers/OPNsense/Interfaces/Api/OverviewController.php
+--- a/src/opnsense/mvc/app/controllers/OPNsense/Interfaces/Api/OverviewController.php
++++ b/src/opnsense/mvc/app/controllers/OPNsense/Interfaces/Api/OverviewController.php
+@@ -290,6 +290,15 @@
+                     ];
+                 }
+ 
++                /* SFP module info for platform SFP+ ports (returns {} otherwise) */
++                $sfp = json_decode((new Backend())->configdpRun('sfp info', [$if]), true);
++                if (!empty($sfp) && is_array($sfp)) {
++                    $ifinfo['sfp'] = [
++                        'value' => $sfp,
++                        'translation' => gettext('SFP Module')
++                    ];
++                }
++
+                 $result['message'] = $ifinfo;
+             }
+         }

@@ -12,7 +12,7 @@ class SensorsController extends ApiControllerBase
         $backend = new Backend();
         $data = json_decode($backend->configdRun('hwmon sensors'), true);
         if (!is_array($data)) {
-            return ['power' => [], 'fans' => [], 'temperatures' => []];
+            return ['power' => [], 'fans' => []];
         }
         return $data;
     }
