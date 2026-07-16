@@ -35,6 +35,14 @@
 #include <net/pfvar.h>
 #include <netinet/tcp_fsm.h>
 
+/* route-to/reply-to/dup-to offloading workaround */
+#include <net/route.h>
+#include <net/route/route_ctl.h>
+#include <net/route/route_var.h>
+#include <netinet/in_fib.h>
+#include <netinet6/in6_fib.h>
+/* end of route-to/reply-to/dup-to offloading workaround */
+
 #include "pf_notify.h"
 
 /* --- Ring buffer -------------------------------------------------- */
@@ -149,6 +157,18 @@ static uint64_t		pfn_counter_misses;
 
 static struct sysctl_ctx_list	pfn_sysctl_ctx;
 
+/* route-to/reply-to/dup-to offloading workaround */
+static struct mtx	pfn_gw_mtx;
+static uint32_t		pfn_gw_seq;
+static struct pf_addr pfn_default_gw[2];   /* [0]=IPv4, [1]=IPv6 */
+static uint64_t		pfn_events_skipped;
+static uint64_t		pfn_events_notskipped;
+static char		pfn_route_gw4[64];
+static char		pfn_route_gw6[64];
+static struct callout	pfn_gw_callout;
+static int		pfn_gw_callout_active;
+/* end of route-to/reply-to/dup-to offloading workaround */
+
 /* --- Event construction ------------------------------------------- */
 
 static void
@@ -202,6 +222,169 @@ pfn_queue_event(struct pfn_event *ev)
 	mtx_unlock(&pfn_mtx);
 }
 
+/* route-to/reply-to/dup-to offloading workaround */
+/*
+ * Compare an address against the stored default gateway for its
+ * address family.  Returns 1 if equal, 0 if not (including when no
+ * default gateway has been resolved).
+ *
+ * The default gateway(s) are stored in pfn_default_gw[] indexed by
+ * address family (AF_INET=0, AF_INET6=1).  Populate these at module
+ * load via rib_lookup() against 0.0.0.0/0 (IPv4) or ::/0 (IPv6).
+ */
+static int
+pf_addr_eq_default(struct pf_addr *addr, int af)
+{
+	uint32_t s1, s2;
+	int match;
+
+	if (af != AF_INET && af != AF_INET6)
+		return (0);
+
+	do {
+		do {
+		  s1 = atomic_load_acq_32(&pfn_gw_seq);
+		} while ((s1 & 1) != 0);
+
+		if (af == AF_INET) {
+			match = (addr->addr32[0]==pfn_default_gw[0].addr32[0]);
+		} else {
+			match = (addr->addr32[0]==pfn_default_gw[1].addr32[0] &&
+		        	 addr->addr32[1]==pfn_default_gw[1].addr32[1] &&
+		        	 addr->addr32[2]==pfn_default_gw[1].addr32[2] &&
+		        	 addr->addr32[3]==pfn_default_gw[1].addr32[3]);
+		}
+
+                /* 
+                 * Ensure all payload lookups are complete BEFORE 
+                 * we sample the final sequence check.
+                 */
+                atomic_thread_fence_acq();
+
+		/* sample the final sequence snapshot */
+		s2 = atomic_load_acq_32(&pfn_gw_seq);
+
+	} while (s1 != s2); /* if changed during read, retry */
+
+	return(match);
+}
+
+/*
+ * Lookup gateway or return zero if not found
+ */
+static struct pf_addr
+pfn_get_default_gw(int af)
+{
+	struct nhop_object *nh;
+	struct pf_addr gw;
+	struct epoch_tracker et;
+
+	/* Zero out — if no route found, return "no gateway" */
+	bzero(&gw, sizeof(gw));
+
+	/* Context: NET_EPOCH */
+	NET_EPOCH_ENTER(et);
+
+	if (af == AF_INET) {
+		struct in_addr dst;
+		dst.s_addr = INADDR_ANY; /* Corresponds to 0.0.0.0 */
+
+		nh = fib4_lookup(0, dst, 0, NHR_NONE, 0);
+		if (nh != NULL && nh->nh_flags & NHF_GATEWAY) {
+			gw.v4 = nh->gw4_sa.sin_addr;
+		}
+
+	} else if (af == AF_INET6) {
+		struct in6_addr dst = in6addr_any; /* Corresponds to :: */
+
+		nh = fib6_lookup(0, &dst, 0, NHR_NONE, 0);
+		if (nh != NULL && nh->nh_flags & NHF_GATEWAY) {
+			gw.v6 = nh->gw6_sa.sin6_addr;
+		}
+	}
+
+	NET_EPOCH_EXIT(et);
+
+	return (gw);
+}
+
+/*
+ * Used to collect locate default gateway information for both IPV4 & IPV6
+ * If no IPV6 gateway, a bogus value returned which will never match a real
+ * packet and the logic will always force the software path in that case
+ *
+ * The default gw is used to help decide route to software or offload
+ * in Multiwan or similar scenarios
+ */
+static void
+pfn_resolve_gateways(void *arg __unused)
+{
+	struct vnet *vxt = (struct vnet *)arg;
+	struct pf_addr gw4;
+	struct pf_addr gw6;
+
+	if (!pfn_open || vxt == NULL)
+		return;
+
+	CURVNET_SET(vxt);
+
+	/* 
+	 * Alert reader that a write is starting (Sequence becomes ODD).
+	 * This forces a release barrier so any prior system state changes 
+	 * are committed before the sequence changes.
+	 */
+	atomic_add_rel_32(&pfn_gw_seq, 1);
+
+	/* Ensure the sequence change is visible to other CPUs before write */
+	atomic_thread_fence_rel();
+
+	/* IPv4 default gateway */
+	gw4 = pfn_get_default_gw(AF_INET);
+	if (gw4.addr32[0] != 0)
+	{
+		pfn_default_gw[0] = gw4;
+		snprintf(pfn_route_gw4, sizeof(pfn_route_gw4), "%u.%u.%u.%u",
+		    gw4.addr8[0], gw4.addr8[1], gw4.addr8[2], gw4.addr8[3]);
+	}
+
+	/* IPv6 default gateway */
+	gw6 = pfn_get_default_gw(AF_INET6);
+	if (gw6.addr32[0] != 0 || gw6.addr32[1] != 0 ||
+	    gw6.addr32[2] != 0 || gw6.addr32[3] != 0)
+	{
+		pfn_default_gw[1] = gw6;
+		uint16_t *s = (uint16_t *)&gw6.v6.s6_addr;
+		snprintf(pfn_route_gw6, sizeof(pfn_route_gw6),
+		    "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x",
+		    ntohs(s[0]), ntohs(s[1]), ntohs(s[2]), ntohs(s[3]),
+		    ntohs(s[4]), ntohs(s[5]), ntohs(s[6]), ntohs(s[7]));
+	}
+
+        /* 
+         * Finalize Write (Sequence becomes EVEN).
+         * The '_rel' variant ensures all gateway data modifications above 
+         * are completely visible to all CPU cores before the sequence 
+         * changes back to an even number.
+         */
+	atomic_add_rel_32(&pfn_gw_seq, 1);
+
+	CURVNET_RESTORE();
+}
+
+/*
+ *  Use FreeBSD's callout mechanism to schedule pfn_resolve_gateways()
+ *  in process context. Set up a recurring callout with a 60-second interval.
+ */
+static void
+pfn_gw_callout_handler(void *arg)
+{
+	struct vnet *vxt = (struct vnet *)arg;
+	pfn_resolve_gateways(vxt);
+	if (pfn_gw_callout_active)
+		callout_reset(&pfn_gw_callout, 60*hz, pfn_gw_callout_handler, vxt);
+}
+/* end of route-to/reply-to/dup-to offloading workaround */
+
 /* --- PF hook implementations ------------------------------------- */
 
 /*
@@ -246,6 +429,41 @@ pfn_update_state(struct pf_kstate *s)
 
 	if (!pfn_open)
 		return;
+
+	/* route-to/reply-to/dup-to offloading workaround */
+	{
+	int _af = s->key[0] ? s->key[0]->af : 0;
+	int _is_zero = (_af == AF_INET && !s->rt_addr.addr32[0]) ||
+		       (_af == AF_INET6 && !s->rt_addr.addr32[0] &&
+		                           !s->rt_addr.addr32[1] &&
+		                           !s->rt_addr.addr32[2] &&
+		                           !s->rt_addr.addr32[3]);
+	/*
+	 * Compare the state's policy-based gateway against the default gateway
+	 * Skip offload when:
+	 *   1. The state has a routing override (route-to/reply-to/dup-to)
+	 *   2. The policy-based gateway is non-zero (valid gateway)
+	 *   3. The policy-based gateway differs from the default gateway
+	 *
+	 * The zero-check for rt_addr is inlined (instead of using PF_AZERO
+	 * macro) because PF_AZERO is only available in userspace builds, not
+	 * kernel builds.  The logic for _is_zero matches the original macro:
+	 *   PF_AZERO(&s->rt_addr, s->key[0]->af)
+	 *
+	 * If default gateways haven't been resolved yet (pfn_default_gw[0/1]
+	 * still zero), the comparison is skipped and the state proceeds to
+	 * offload (nominal path).
+	 */
+	if (s->rt != PF_NOPFROUTE &&
+	    !_is_zero &&
+	    !pf_addr_eq_default(&s->rt_addr, _af)) {
+		/* skip offload */
+		pfn_events_skipped++;
+		return;
+	}
+	pfn_events_notskipped++;
+	}
+	/* end of route-to/reply-to/dup-to offloading workaround */
 
 	proto = s->key[PF_SK_WIRE]->proto;
 	src_st = s->src.state;
@@ -540,6 +758,28 @@ pfn_sysctl_init(void)
 	    "pfnotify", CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
 	    "PF state change notification");
 
+	/* route-to/reply-to/dup-to offloading workaround */
+	SYSCTL_ADD_STRING(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "route_gw6", CTLFLAG_RD,
+	    pfn_route_gw6, sizeof(pfn_route_gw6),
+	    "Default IPv6 route in fastpath");
+
+	SYSCTL_ADD_STRING(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "route_gw4", CTLFLAG_RD,
+	    pfn_route_gw4, sizeof(pfn_route_gw4),
+	    "Default IPv4 route in fastpath");
+
+	SYSCTL_ADD_U64(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "events_notskipped", CTLFLAG_RD,
+	    &pfn_events_notskipped, 0,
+	    "route-to/dup-to/reply-to events not skipped");
+
+	SYSCTL_ADD_U64(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "events_skipped", CTLFLAG_RD,
+	    &pfn_events_skipped, 0,
+	    "route-to/dup-to/reply-to events skipped");
+	/* end of route-to/reply-to/dup-to offloading workaround */
+
 	SYSCTL_ADD_INT(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
 	    OID_AUTO, "ring_size", CTLFLAG_RD,
 	    SYSCTL_NULL_INT_PTR, PFN_RING_SIZE,
@@ -616,6 +856,22 @@ pfn_load(void)
 		return (ENXIO);
 	}
 
+	/* route-to/reply-to/dup-to offloading workaround */
+	/* zero out gateways array - all-zeros means "not resolved" */
+	memset(pfn_default_gw, 0, sizeof(pfn_default_gw));
+	memset(pfn_route_gw4, 0, sizeof(pfn_route_gw4));
+	memset(pfn_route_gw6, 0, sizeof(pfn_route_gw6));
+	pfn_events_skipped = 0;
+	pfn_events_notskipped = 0;
+
+	/* enable callout to refresh IPv4 and IPv6 gateways */
+	pfn_gw_seq = 0; /* initialize as even # */
+	mtx_init(&pfn_gw_mtx, "pfnotifygw", NULL, MTX_DEF);
+	callout_init_mtx(&pfn_gw_callout, &pfn_gw_mtx, 0);
+	pfn_gw_callout_active = 1;
+	callout_reset(&pfn_gw_callout, 60*hz, pfn_gw_callout_handler, curvnet);
+	/* end of route-to/reply-to/dup-to offloading workaround */
+
 	pfn_sysctl_init();
 
 	/* Register hooks */
@@ -632,6 +888,12 @@ pfn_load(void)
 static void
 pfn_unload(void)
 {
+	/* route-to/reply-to/dup-to offloading workaround */
+	/* stop callout to prevent further gateway resolution */
+	pfn_gw_callout_active = 0;
+	callout_drain(&pfn_gw_callout);
+	mtx_destroy(&pfn_gw_mtx);
+	/* end of route-to/reply-to/dup-to offloading workaround */
 
 	/* Unregister hooks first */
 	PF_RULES_WLOCK();
