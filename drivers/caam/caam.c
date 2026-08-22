@@ -751,7 +751,7 @@ caam_alloc_resource(device_t bus, device_t child, int type, int *rid,
  * The child gets its own bus handle pointing into our VA space.
  */
 static int
-caam_activate_resource(device_t bus, device_t child, int type, int rid, struct resource *res)
+caam_activate_resource(device_t bus, device_t child, struct resource *res)
 {
 	struct caam_softc *sc;
 	bus_space_handle_t bh;
@@ -761,11 +761,11 @@ caam_activate_resource(device_t bus, device_t child, int type, int rid, struct r
 	sc = device_get_softc(bus);
 
 	if (rman_get_type(res) != SYS_RES_MEMORY)
-		return (bus_generic_activate_resource(bus, child, type, rid, res));
+		return (bus_generic_activate_resource(bus, child, res));
 
 	/* Verify the resource belongs to our rman */
 	if (rman_is_region_manager(res, &sc->sc_mem_rman) == 0)
-		return (bus_generic_activate_resource(bus, child, type, rid, res));
+		return (bus_generic_activate_resource(bus, child, res));
 
 	bt = rman_get_bustag(sc->sc_rres);
 	rv = bus_space_subregion(bt, rman_get_bushandle(sc->sc_rres),
@@ -788,7 +788,7 @@ caam_activate_resource(device_t bus, device_t child, int type, int rid, struct r
  * Just clear the RF_ACTIVE flag.
  */
 static int
-caam_deactivate_resource(device_t bus, device_t child, int type, int rid, struct resource *res)
+caam_deactivate_resource(device_t bus, device_t child, struct resource *res)
 {
 	struct caam_softc *sc;
 
@@ -796,7 +796,7 @@ caam_deactivate_resource(device_t bus, device_t child, int type, int rid, struct
 
 	if (rman_get_type(res) != SYS_RES_MEMORY ||
 	    rman_is_region_manager(res, &sc->sc_mem_rman) == 0)
-		return (bus_generic_deactivate_resource(bus, child, type, rid, res));
+		return (bus_generic_deactivate_resource(bus, child, res));
 
 	return (rman_deactivate_resource(res));
 }
@@ -805,7 +805,7 @@ caam_deactivate_resource(device_t bus, device_t child, int type, int rid, struct
  * Bus method: release a child's resource.
  */
 static int
-caam_release_resource(device_t bus, device_t child, int type, int rid, struct resource *res)
+caam_release_resource(device_t bus, device_t child, struct resource *res)
 {
 	struct caam_softc *sc;
 	struct resource_list_entry *rle;
@@ -815,10 +815,10 @@ caam_release_resource(device_t bus, device_t child, int type, int rid, struct re
 
 	if (rman_get_type(res) != SYS_RES_MEMORY ||
 	    rman_is_region_manager(res, &sc->sc_mem_rman) == 0)
-		return (bus_generic_rl_release_resource(bus, child, type, rid, res));
+		return (bus_generic_rl_release_resource(bus, child, res));
 
 	if ((rman_get_flags(res) & RF_ACTIVE) != 0) {
-		rv = bus_deactivate_resource(child, type, rid, res);
+		rv = bus_deactivate_resource(child, res);
 		if (rv != 0)
 			return (rv);
 	}
