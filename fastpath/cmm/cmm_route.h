@@ -60,6 +60,13 @@ void cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
 /* Invalidate all routes using a specific output interface */
 void cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index);
 
+/* Invalidate all routes pointing at a neighbor (its MAC changed) */
+void cmm_route_invalidate_by_neigh(struct cmm_global *g,
+    struct cmm_neigh *neigh);
+
+/* Poll for gateway MAC changes and invalidate affected routes */
+void cmm_route_check_neigh_changes(struct cmm_global *g);
+
 /* Allocate a new unique route ID */
 uint32_t cmm_route_alloc_id(struct cmm_global *g);
 

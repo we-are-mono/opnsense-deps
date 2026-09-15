@@ -412,6 +412,57 @@ cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index)
 }
 
 /*
+ * Invalidate all cached routes pointing at a neighbor whose MAC just
+ * changed (CARP failover, gateway hardware swap).  The route itself
+ * is still valid - only the stale link-layer rewrite CDX programmed
+ * needs tearing down so the connections re-offload with the new MAC.
+ */
+void
+cmm_route_invalidate_by_neigh(struct cmm_global *g, struct cmm_neigh *neigh)
+{
+	struct cmm_route *rt;
+	struct list_head *pos;
+	int i, count = 0;
+
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
+		for (pos = list_first(&route_hash[i]);
+		    pos != &route_hash[i]; pos = list_next(pos)) {
+			rt = container_of(pos, struct cmm_route, entry);
+
+			if (rt->neigh != neigh)
+				continue;
+
+			cmm_route_invalidate_conns(g, rt);
+			cmm_fe_route_deregister(g, rt);
+			count++;
+		}
+	}
+
+	if (count > 0)
+		cmm_print(CMM_LOG_INFO,
+		    "route: invalidated %d route(s), neighbor MAC changed",
+		    count);
+}
+
+/* cmm_neigh_recheck_all() callback: fires per neighbor whose MAC changed */
+static void
+route_on_neigh_changed(struct cmm_neigh *neigh, void *arg)
+{
+	cmm_route_invalidate_by_neigh((struct cmm_global *)arg, neigh);
+}
+
+/*
+ * Periodic check for gateway MAC changes.  Unlike a route change, a
+ * MAC change (CARP failover, hardware swap) never touches the routing
+ * table, so there's no event to catch it - this has to poll.
+ */
+void
+cmm_route_check_neigh_changes(struct cmm_global *g)
+{
+	cmm_neigh_recheck_all(g, route_on_neigh_changed, g);
+}
+
+/*
  * Flush all cached routes — local state only.
  * Clears fpp_programmed without calling cmm_fe_route_deregister(),
  * because CDX tables have already been wiped by cmm_fe_reset().

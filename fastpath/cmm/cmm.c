@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include "cmm.h"
@@ -128,6 +129,10 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+
+	/* Once daemonized, stderr has no reader - route through syslog
+	 * so deny-rule/offload/FCI logging stays visible after that. */
+	openlog("cmm", LOG_PID | LOG_NDELAY, LOG_DAEMON);
 
 	cmm_print(CMM_LOG_INFO, "CMM starting (debug=%d)", g->debug_level);
 
@@ -519,6 +524,7 @@ out:
 
 	pidfile_remove(pfh);
 	cmm_print(CMM_LOG_INFO, "exited");
+	closelog();
 
 	return (0);
 }

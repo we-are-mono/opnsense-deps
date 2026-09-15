@@ -75,13 +75,23 @@ struct cmm_global {
 
 extern struct cmm_global cmm_g;
 
-/* Logging */
+/*
+ * Logging.  stderr has no reader once daemonized, so ERR/WARN/INFO
+ * also go to syslog - that's what stays visible after daemon(3)
+ * detaches.  DEBUG/TRACE stay stderr-only: those fire on hot paths
+ * (e.g. every connection teardown) and are only used with -f/-d for
+ * interactive troubleshooting anyway.
+ */
 #define cmm_print(level, fmt, ...) do {					\
 	if ((level) <= cmm_g.debug_level) {				\
 		const char *_pfx[] = { "ERR", "WARN", "INFO",		\
 		    "DBG", "TRC" };					\
+		static const int _sysp[] = { LOG_ERR, LOG_WARNING,	\
+		    LOG_INFO };						\
 		fprintf(stderr, "cmm[%s]: " fmt "\n",			\
 		    _pfx[(level)], ##__VA_ARGS__);			\
+		if ((level) <= CMM_LOG_INFO)				\
+			syslog(_sysp[(level)], fmt, ##__VA_ARGS__);	\
 	}								\
 } while (0)
 

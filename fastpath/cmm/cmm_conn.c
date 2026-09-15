@@ -468,6 +468,48 @@ conn_find_by_pfid(uint64_t id, uint32_t creatorid)
 }
 
 /*
+ * Same lookup, but by NAT-companion id instead of primary id. A
+ * companion state closing (DELETE, live or missed) doesn't end the
+ * connection - the primary keeps going - so callers use this only to
+ * find and clear stale companion bookkeeping, never to conn_remove().
+ */
+static struct cmm_conn *
+conn_find_by_nat_pfid(uint64_t id, uint32_t creatorid)
+{
+	struct list_head *pos;
+	struct cmm_conn *conn;
+	int i;
+
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn,
+			    hash_entry);
+			if (conn->pf_has_nat_id &&
+			    conn->pf_id_nat == id &&
+			    conn->pf_creatorid_nat == creatorid)
+				return (conn);
+		}
+	}
+	return (NULL);
+}
+
+/*
+ * Clear stale NAT-companion bookkeeping on a connection whose companion
+ * PF state is gone. Leaves the connection and its primary PF state
+ * (and offload) untouched - only the companion fields are reset so
+ * stats-sync stops re-querying a dead id forever.
+ */
+static void
+conn_clear_nat_companion(struct cmm_conn *conn)
+{
+	conn->pf_id_nat = 0;
+	conn->pf_creatorid_nat = 0;
+	conn->pf_has_nat_id = 0;
+	conn->flags &= ~CONN_F_HAS_NAT;
+}
+
+/*
  * Extract connection tuples from a pfn_event.
  * Same logic as conn_extract_tuples() but reads from pfn_event.
  */
@@ -690,6 +732,19 @@ handle_pf_delete(struct cmm_global *g, const struct pfn_event *ev)
 
 	conn = conn_find_by_pfid(ev->id, ev->creatorid);
 	if (conn == NULL) {
+		/* Not a primary id - check whether it's a NAT companion
+		 * closing on its own (e.g. asymmetric close) while the
+		 * primary connection is still alive. That's not an
+		 * unknown id, just stale bookkeeping to clear. */
+		conn = conn_find_by_nat_pfid(ev->id, ev->creatorid);
+		if (conn != NULL) {
+			cmm_print(CMM_LOG_DEBUG,
+			    "conn: proto=%u NAT companion closed, "
+			    "clearing stale companion id", conn->proto);
+			conn_clear_nat_companion(conn);
+			return;
+		}
+
 		cmm_print(CMM_LOG_TRACE,
 		    "conn: DELETE for unknown id=%016llx",
 		    (unsigned long long)ev->id);
@@ -773,6 +828,10 @@ cmm_conn_maintenance(struct cmm_global *g)
 	int i;
 	unsigned int retried = 0;
 
+	/* Catch gateway MAC changes before retrying offload, so anything
+	 * just invalidated re-offloads in this same pass. */
+	cmm_route_check_neigh_changes(g);
+
 	for (i = 0; i < CONN_HASH_SIZE; i++) {
 		for (pos = list_first(&conn_hash[i]);
 		    pos != &conn_hash[i]; pos = list_next(pos)) {
@@ -806,6 +865,8 @@ stats_sync_flush(struct cmm_global *g, struct pfn_counter_entry *entries,
     uint32_t count)
 {
 	struct pfn_counter_update upd;
+	struct cmm_conn *conn;
+	uint32_t i;
 
 	if (count == 0)
 		return;
@@ -814,10 +875,51 @@ stats_sync_flush(struct cmm_global *g, struct pfn_counter_entry *entries,
 	upd.pad = 0;
 	upd.entries = entries;
 
-	if (ioctl(g->pfnotify_fd, PFN_IOC_UPDATE_COUNTERS, &upd) < 0)
+	if (ioctl(g->pfnotify_fd, PFN_IOC_UPDATE_COUNTERS, &upd) < 0) {
 		cmm_print(CMM_LOG_WARN, "stats_sync: ioctl failed: %s",
 		    strerror(errno));
+		return;
+	}
+
+	/* PF has no state for this id — it was already torn down and we
+	 * missed the DELETE event (e.g. a full ring). Check the primary
+	 * id first: a missing primary means the whole conn is orphaned.
+	 * A missing NAT-companion id doesn't end the conn - the primary
+	 * is unaffected - so that case only clears the stale companion
+	 * bookkeeping instead of removing anything. */
+	for (i = 0; i < count; i++) {
+		if (!entries[i].missing)
+			continue;
+		conn = conn_find_by_pfid(entries[i].id, entries[i].creatorid);
+		if (conn != NULL) {
+			cmm_print(CMM_LOG_INFO,
+			    "conn: proto=%u orphaned (PF state gone, "
+			    "DELETE missed)", conn->proto);
+			conn_remove(g, conn);
+			continue;
+		}
+
+		conn = conn_find_by_nat_pfid(entries[i].id,
+		    entries[i].creatorid);
+		if (conn == NULL)
+			continue;
+		cmm_print(CMM_LOG_DEBUG,
+		    "conn: proto=%u NAT companion gone (DELETE missed), "
+		    "clearing stale companion id", conn->proto);
+		conn_clear_nat_companion(conn);
+	}
 }
+
+/*
+ * Per-tick cap on connections queried.  fci_cmd() blocks on a real
+ * ioctl round-trip per connection, on the same thread that services
+ * pfnotify/rtsock - querying the whole table in one call stalls both
+ * for however long that takes.  1024 keeps a full lap (at a realistic
+ * few thousand offloaded connections) well under pf's 30s single-
+ * direction UDP timeout, so a slow lap can't cost a live connection
+ * its PF state and force an avoidable re-offload.
+ */
+#define CMM_STATS_SYNC_MAX_PER_TICK	1024
 
 void
 cmm_conn_stats_sync(struct cmm_global *g)
@@ -828,21 +930,32 @@ cmm_conn_stats_sync(struct cmm_global *g)
 	unsigned short resp_len;
 	struct cmm_conn *conn;
 	struct list_head *pos;
+	static unsigned int cursor;
+	unsigned int start, i, matched;
 	uint32_t n;
-	int i, rc;
+	int rc;
 
 	if (g->pfnotify_fd < 0)
 		return;
 
+	if (cursor >= CONN_HASH_SIZE)
+		cursor = 0;
+	start = cursor;
 	n = 0;
+	matched = 0;
 
-	for (i = 0; i < CONN_HASH_SIZE; i++) {
+	i = start;
+	do {
 		for (pos = list_first(&conn_hash[i]);
 		    pos != &conn_hash[i]; pos = list_next(pos)) {
 			conn = container_of(pos, struct cmm_conn, hash_entry);
 
 			if (!(conn->flags & CONN_F_OFFLOADED))
 				continue;
+
+			if (matched >= CMM_STATS_SYNC_MAX_PER_TICK)
+				goto done_scan;
+			matched++;
 
 			/* Build stat query for this flow's original 5-tuple */
 			memset(&cmd, 0, sizeof(cmd));
@@ -877,7 +990,9 @@ cmm_conn_stats_sync(struct cmm_global *g)
 			batch[n].bytes[0] = resp.TotalBytes;
 			n++;
 
-			/* NAT companion PF state (if present) */
+			/* NAT companion PF state (if present). Traffic is
+			 * credited to the primary only - one flow, one
+			 * count. This entry just keeps its expire refreshed. */
 			if (conn->pf_has_nat_id) {
 				if (n >= PFN_COUNTER_BATCH_MAX)
 					stats_sync_flush(g, batch, n),
@@ -885,8 +1000,6 @@ cmm_conn_stats_sync(struct cmm_global *g)
 				memset(&batch[n], 0, sizeof(batch[n]));
 				batch[n].id = conn->pf_id_nat;
 				batch[n].creatorid = conn->pf_creatorid_nat;
-				batch[n].packets[0] = resp.TotalPackets;
-				batch[n].bytes[0] = resp.TotalBytes;
 				n++;
 			}
 
@@ -895,7 +1008,14 @@ cmm_conn_stats_sync(struct cmm_global *g)
 				n = 0;
 			}
 		}
-	}
+
+		i = (i + 1 == CONN_HASH_SIZE) ? 0 : i + 1;
+	} while (i != start);
+
+done_scan:
+	/* Resume from here next tick - past the last bucket we finished,
+	 * or the one we stopped mid-way through on hitting the cap. */
+	cursor = i;
 
 	/* Flush remaining */
 	stats_sync_flush(g, batch, n);

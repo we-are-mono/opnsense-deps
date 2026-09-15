@@ -80,18 +80,20 @@ struct pfn_counter_entry {
 	uint32_t	pad;
 	uint64_t	packets[2];	/* delta [0]=forward, [1]=reply */
 	uint64_t	bytes[2];	/* delta [0]=forward, [1]=reply */
+	uint8_t		missing;	/* out: 1 if PF had no matching state */
+	uint8_t		pad2[7];
 };
 
 struct pfn_counter_update {
 	uint32_t	count;		/* number of entries */
 	uint32_t	pad;
-	const struct pfn_counter_entry *entries;	/* userspace pointer */
+	struct pfn_counter_entry *entries;	/* userspace pointer, in/out */
 };
 
 #ifdef _KERNEL
 #include <sys/ioccom.h>
 #endif
 
-#define PFN_IOC_UPDATE_COUNTERS	_IOW('N', 1, struct pfn_counter_update)
+#define PFN_IOC_UPDATE_COUNTERS	_IOWR('N', 1, struct pfn_counter_update)
 
 #endif /* PF_NOTIFY_H */
