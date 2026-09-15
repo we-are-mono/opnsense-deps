@@ -186,27 +186,15 @@ void ct_remove(PCtEntry pEntry_orig)
 
 	cdx_timer_del(&ppair->timer);
 
+	/* delete_entry_from_classif_table() owns the classifier entry on
+	 * every arm of the DeleteKey contract and always releases the hw_ct
+	 * wrapper, so there is nothing left here to dispose of - including
+	 * after an earlier CONNTRACK_DEL_FAILED, where ct is already NULL
+	 * and the table entry was deliberately abandoned (ISSUES.md A95). */
 	if ((pEntry_orig->status & CONNTRACK_HWSET) && delete_entry_from_classif_table(pEntry_orig))
 		DPRINT_ERROR("failed to delete orig entry\n");
 	if ((pEntry_rep->status & CONNTRACK_HWSET) && delete_entry_from_classif_table(pEntry_rep))
 		DPRINT_ERROR("failed to delete reply entry\n");
-
-	if (pEntry_orig->status & CONNTRACK_DEL_FAILED)
-	{
-		/* free table entry */
-		ExternalHashTableEntryFree(pEntry_orig->ct->handle);
-		pEntry_orig->ct->handle =  NULL;
-		kfree(pEntry_orig->ct);
-		pEntry_orig->ct = NULL;
-	}
-	if (pEntry_rep->status & CONNTRACK_DEL_FAILED)
-	{
-		/* free table entry */
-		ExternalHashTableEntryFree(pEntry_rep->ct->handle);
-		pEntry_rep->ct->handle =  NULL;
-		kfree(pEntry_rep->ct);
-		pEntry_rep->ct = NULL;
-	}
 
 	IP_delete_CT_route(pEntry_orig);
 	IP_delete_CT_route(pEntry_rep);
@@ -244,6 +232,25 @@ void ct_update_one(PCtEntry pEntry)
 	if (!(pEntry->status & CONNTRACK_HWSET)){
 		if(is_CT_COMPLETE(pEntry))
 		{
+			/* CONNTRACK_DEL_FAILED means an earlier delete bailed
+			 * out before the key was provably unlinked, so the old
+			 * key may still resolve in the hardware table. Adding
+			 * the same key again would build a duplicate-key bucket
+			 * whose two entries carry different actions, and only
+			 * one of them is reachable for a later delete. There is
+			 * no way back from that state, so refuse the
+			 * re-offload; the stale key may well keep fast-pathing
+			 * the 5-tuple with its old action, but adding a second
+			 * one cannot improve that and makes it unrecoverable
+			 * (ISSUES.md A95). EN_EHASH_DELETE_UNSYNCED does not set the flag:
+			 * there the key *is* out of the table, only the barrier
+			 * is missing, and the parked entry is the quarantine's
+			 * to release. */
+			if (pEntry->status & CONNTRACK_DEL_FAILED)
+			{
+				DPRINT_ERROR("refusing to re-offload a conntrack whose classifier key was never provably unlinked; re-inserting it would duplicate the key\n");
+				return;
+			}
 			rc = insert_entry_in_classif_table(pEntry);
 			if (rc)
 				DPRINT_ERROR("failed to insert entry\n");
@@ -258,13 +265,14 @@ void ct_update_one(PCtEntry pEntry)
 			 delete the entry from classification table till an update is received.*/
 		rc = delete_entry_from_classif_table(pEntry);
 		if(rc)
-		{
-			pEntry->status |= CONNTRACK_DEL_FAILED;
-			pEntry->status &= ~CONNTRACK_HWSET;
 			DPRINT_ERROR("failed to delete entry\n");
-		}
-		else
-			pEntry->status &= ~CONNTRACK_HWSET;
+		/* Pre-unlink failure only: the key may still be live in the
+		 * table, which permanently bars a re-offload of this flow. An
+		 * unsynced delete leaves the key provably out, so it does not
+		 * earn the flag. */
+		if (rc && rc != EN_EHASH_DELETE_UNSYNCED)
+			pEntry->status |= CONNTRACK_DEL_FAILED;
+		pEntry->status &= ~CONNTRACK_HWSET;
 
 		return;
 	}

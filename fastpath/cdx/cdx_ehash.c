@@ -491,6 +491,220 @@ static int fill_key_info(PCtEntry entry, uint8_t *keymem, uint32_t port_id)
 	return key_size;
 }
 
+/* Pending-free quarantine for external-hash table entries (ISSUES.md
+ * A80, generalized to every classifier path by A95).
+ *
+ * A table entry leaves a live FMAN chain destructively and before any
+ * barrier - either inside ExternalHashTableDeleteKey() or, for
+ * multicast listeners, through the open-coded splice in
+ * dpa_control_mc.c. A host-command sync (ExternalHashTableFmPcdHcSync)
+ * is what proves that a ucode walker which entered the chain before the
+ * splice has left it; until one succeeds, the unlinked memory may still
+ * be dereferenced by hardware, so it must not go back to the allocator.
+ *
+ * A failed sync therefore leaves an entry that can neither be freed nor
+ * re-unlinked (the surgery is not idempotent - replaying it would walk
+ * pointers that have already been advanced). Park it here instead: the
+ * owning software state is cleared as usual, the memory stays allocated
+ * but unreachable, and the backlog is released the next time any sync
+ * on this PCD succeeds.
+ *
+ * One successful sync clears the whole backlog:
+ * ExternalHashTableFmPcdHcSync() syncs the table handle's PCD, and
+ * LS1046A runs a single FMAN PCD, so a success reached via any table or
+ * any flow is a valid barrier for every entry unlinked before it.
+ *
+ * Concurrency: the quarantine carries no lock of its own. Every touch
+ * runs either from an FCI command handler - serialized by ctrl.mutex in
+ * cdx_cmdhandler.c, with the multicast callers additionally holding
+ * mc_mutators_mutex - from the CT aging kthread, which takes that same
+ * ctrl.mutex, or from module exit with no handler in flight. The query
+ * walkers never see it, so no softirq-safe variant is needed. Callers
+ * must not hold a spinlock: the barriers reached from here busy-wait on
+ * host-command completion.
+ */
+atomic_t cdx_stat_hc_delete_unsynced;
+atomic_t cdx_stat_hc_delete_leaked;
+atomic_t cdx_stat_hc_delete_quarantined;
+
+struct cdx_ehash_pending_free {
+	struct list_head list;
+	void *tbl_entry;
+};
+
+static struct list_head cdx_ehash_pending_frees;
+static int cdx_ehash_pending_frees_initialized;
+static atomic_t cdx_ehash_pending_free_cnt;
+
+static inline void
+cdx_ehash_quarantine_init_once(void)
+{
+	if (!cdx_ehash_pending_frees_initialized) {
+		INIT_LIST_HEAD(&cdx_ehash_pending_frees);
+		cdx_ehash_pending_frees_initialized = 1;
+	}
+}
+
+/* Advisory snapshot for the debug proc readers, which run outside the
+ * mutator serialization. */
+unsigned int cdx_ehash_quarantine_pending(void)
+{
+	return atomic_read(&cdx_ehash_pending_free_cnt);
+}
+
+void cdx_ehash_quarantine_entry(void *tbl_entry)
+{
+	struct cdx_ehash_pending_free *node;
+
+	if (!tbl_entry)
+		return;
+
+	cdx_ehash_quarantine_init_once();
+
+	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	if (!node)
+	{
+		/* No safe alternative: the entry is already out of the chain,
+		 * so it can neither be freed without a barrier nor reached
+		 * again through the owning software state. Leak it - the same
+		 * outcome the code had before the quarantine existed - and
+		 * make the leak visible in the log. */
+		DPA_ERROR("%s::quarantine alloc failed, leaking tbl_entry %p\n",
+				__FUNCTION__, tbl_entry);
+		return;
+	}
+	node->tbl_entry = tbl_entry;
+	list_add_tail(&node->list, &cdx_ehash_pending_frees);
+	atomic_inc(&cdx_ehash_pending_free_cnt);
+	atomic_inc(&cdx_stat_hc_delete_quarantined);
+}
+
+/* Release the whole backlog. Callers must have just observed a
+ * successful HC sync on this PCD, or be running at module exit where
+ * the PCD teardown has already quiesced the FMAN. Calling it without
+ * such a barrier reintroduces the use-after-free the quarantine exists
+ * to prevent. */
+void cdx_ehash_quarantine_free_all(void)
+{
+	struct cdx_ehash_pending_free *node, *tmp;
+
+	cdx_ehash_quarantine_init_once();
+
+	list_for_each_entry_safe(node, tmp, &cdx_ehash_pending_frees, list)
+	{
+		list_del(&node->list);
+		ExternalHashTableEntryFree(node->tbl_entry);
+		kfree(node);
+	}
+	atomic_set(&cdx_ehash_pending_free_cnt, 0);
+}
+
+/* Module-exit disposition of a backlog no drain could clear. cdx does
+ * NOT tear down the FMAN PCD on unload (sdk_fman owns it and stays
+ * loaded), so there is no barrier here either: by this point every
+ * teardown has already retried the sync and failed, meaning the HC
+ * channel is wedged and the ucode may still be walking the parked
+ * memory. Leaking a handful of entries at rmmod (test images only; cdx
+ * is never unloaded in production) is the only safe terminal state. */
+void cdx_ehash_quarantine_abandon(void)
+{
+	struct cdx_ehash_pending_free *node, *tmp;
+	int pending;
+
+	cdx_ehash_quarantine_init_once();
+
+	pending = atomic_read(&cdx_ehash_pending_free_cnt);
+	if (!pending)
+		return;
+
+	DPA_ERROR("%s::HC channel never recovered, leaking %u quarantined entries\n",
+			__FUNCTION__, pending);
+	/* Only the table entries have to be abandoned. The list nodes are
+	 * ordinary kmalloc'd bookkeeping with no hardware reference, so
+	 * release them rather than hand kmemleak a pile of reports that
+	 * hide a real one. */
+	list_for_each_entry_safe(node, tmp, &cdx_ehash_pending_frees, list)
+	{
+		list_del(&node->list);
+		kfree(node);
+	}
+	atomic_set(&cdx_ehash_pending_free_cnt, 0);
+}
+
+/* Retry the barrier for entries parked by an earlier failed sync. HC
+ * failures are frequently transient (frame-pool exhaustion rather than a
+ * wedged channel), so the reclaim attempt belongs on the next mutator
+ * that touches the same PCD. Paths that delete a key get the retry for
+ * free through cdx_ehash_delete_entry(); this entry point exists for the
+ * ones that only splice (multicast listener REMOVE/UPDATE), which
+ * otherwise issue no barrier at all. No-op when nothing is pending,
+ * which is the common case. */
+void cdx_ehash_quarantine_drain(void *td)
+{
+	cdx_ehash_quarantine_init_once();
+
+	if (list_empty(&cdx_ehash_pending_frees))
+		return;
+
+	if (ExternalHashTableFmPcdHcSync(td))
+	{
+		DPA_ERROR("%s::FmPcdHcSync failed, %u entries still quarantined\n",
+				__FUNCTION__, atomic_read(&cdx_ehash_pending_free_cnt));
+		return;
+	}
+	cdx_ehash_quarantine_free_all();
+}
+
+/* Delete one key from an external hash table and dispose of its table
+ * entry per the ExternalHashTableDeleteKey() tri-state (fm_ehash.h).
+ *
+ * This function owns `handle` from here on: no caller may free it on any
+ * path, and a caller that keeps freeing it reintroduces the A95 defect
+ * class (use-after-free on the not-unlinked arm, premature free on the
+ * unsynced arm). Callers stay responsible for their own software
+ * wrappers only. A NULL handle is tolerated so the "nothing was ever
+ * installed" case needs no guard at every site.
+ *
+ * Returns the raw rc, so callers can still distinguish gone (0) from
+ * unlinked-but-unproven (EN_EHASH_DELETE_UNSYNCED) from
+ * possibly-still-linked (FAILURE) - the last of which additionally means
+ * the key may still resolve in hardware, so re-inserting it would build
+ * a duplicate-key bucket. */
+int cdx_ehash_delete_entry(void *td, uint16_t index, void *handle)
+{
+	int rc;
+
+	if (!handle)
+		return SUCCESS;
+
+	rc = ExternalHashTableDeleteKey(td, index, handle);
+	if (rc == SUCCESS)
+	{
+		ExternalHashTableEntryFree(handle);
+		/* DeleteKey syncs the PCD before reporting success, and one
+		 * sync is a barrier for every entry unlinked before it, so
+		 * this same round-trip retires the whole backlog. */
+		cdx_ehash_quarantine_free_all();
+		return rc;
+	}
+	if (rc == EN_EHASH_DELETE_UNSYNCED)
+	{
+		/* Out of the chain, but no proof the ucode has left it. Park
+		 * it for the next successful sync on this PCD. */
+		atomic_inc(&cdx_stat_hc_delete_unsynced);
+		cdx_ehash_quarantine_entry(handle);
+		return rc;
+	}
+	/* Not provably unlinked, and there is no second unlink to retry: a
+	 * live chain may still resolve to this entry forever. Freeing it -
+	 * now, or later through the quarantine - is a use-after-free the
+	 * hardware commits, so the memory is abandoned deliberately. */
+	atomic_inc(&cdx_stat_hc_delete_leaked);
+	DPA_ERROR("%s::DeleteKey rc %d, leaking tbl_entry %p: not provably unlinked, freeing it would be a use-after-free\n",
+			__FUNCTION__, rc, handle);
+	return rc;
+}
+
 /* check activity */
 void hw_ct_get_active(struct hw_ct *ct)
 {
@@ -526,22 +740,36 @@ static void hw_ct_free_siblings(struct hw_ct *ct)
 	struct hw_ct_sibling *sib = ct->siblings;
 	while (sib) {
 		struct hw_ct_sibling *next = sib->next;
-		ExternalHashTableDeleteKey(sib->td, sib->index, sib->handle);
-		ExternalHashTableEntryFree(sib->handle);
+		(void)cdx_ehash_delete_entry(sib->td, sib->index, sib->handle);
 		kfree(sib);
 		sib = next;
 	}
 	ct->siblings = NULL;
 }
 
-/* delete classif entry from table */
+/* delete classif entry from table.
+ *
+ * Returns the ExternalHashTableDeleteKey() rc (fm_ehash.h): SUCCESS, or
+ * one of the two failure arms. The table entry's disposition belongs to
+ * cdx_ehash_delete_entry() on every arm; what this function owns is the
+ * hw_ct wrapper, which is pure software with no hardware reference and
+ * so is always released. Keeping ct alive past a failed delete bought
+ * nothing and is what let ct_remove() free an already-disposed handle
+ * (ISSUES.md A95). */
 int delete_entry_from_classif_table(PCtEntry entry)
 {
+	int rc;
+
 	if (!entry)
 	{
 		DPA_ERROR("%s:: Ct entry is NULL\n", __FUNCTION__);
 		return FAILURE;
 	}
+	/* ct == NULL is the normal state after ANY earlier delete attempt
+	 * (this function disposes of it on every rc), so a second call for
+	 * the same conntrack must be a successful no-op, not an oops. */
+	if (!entry->ct)
+		return SUCCESS;
 
 	CDX_DPA_DPRINT("\n");
 
@@ -549,24 +777,24 @@ int delete_entry_from_classif_table(PCtEntry entry)
 	if (entry->ct->siblings)
 		hw_ct_free_siblings(entry->ct);
 
-	if (ExternalHashTableDeleteKey(entry->ct->td,
-			entry->ct->index, entry->ct->handle)) {
-                DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
-		return FAILURE;
-	}
-	//free table entry
-	ExternalHashTableEntryFree(entry->ct->handle);
-	entry->ct->handle =  NULL;
+	rc = cdx_ehash_delete_entry(entry->ct->td, entry->ct->index,
+			entry->ct->handle);
+	if (rc)
+		DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
+
 	kfree(entry->ct);
 	entry->ct = NULL;
-	return SUCCESS;
+	return rc;
 }
 
 int delete_pppoe_relay_entry_from_classif_table(pPPPoE_Info entry)
 {
 	struct hw_ct *ct;
+	int rc;
 
 	ct = entry->hw_entry.ct;
+	if (!ct)
+		return SUCCESS;
 
 	CDX_DPA_DPRINT("\n");
 
@@ -574,23 +802,26 @@ int delete_pppoe_relay_entry_from_classif_table(pPPPoE_Info entry)
 	if (ct->siblings)
 		hw_ct_free_siblings(ct);
 
-	if(ExternalHashTableDeleteKey(ct->td,ct->index, ct->handle))
-	{
+	rc = cdx_ehash_delete_entry(ct->td, ct->index, ct->handle);
+	if (rc)
 		DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
-		return FAILURE;
-	}
-	//free table entry
-	ExternalHashTableEntryFree(ct->handle);
-	ct->handle =  NULL;
+
 	kfree(ct);
-	ct = NULL;
-	return SUCCESS;
+	entry->hw_entry.ct = NULL;
+	return rc;
 }
 
-/* delete classif entry from table */
+/* delete classif entry from table.
+ *
+ * The handle's disposition is cdx_ehash_delete_entry()'s. The software
+ * flow is torn down on SUCCESS and on the unsynced arm (the key is out
+ * of the table on both); on a hard FAILURE the flow survives intact as
+ * a tombstone - see the comment at that arm. Returns the delete rc so
+ * the caller can distinguish the arms. */
 int delete_l2br_entry_classif_table(struct L2Flow_entry *entry)
 {
 	struct hw_ct *ct = entry->ct;
+	int rc = SUCCESS;
 
 	if (ct) {
 		/* Remove LAGG sibling entries first */
@@ -599,20 +830,43 @@ int delete_l2br_entry_classif_table(struct L2Flow_entry *entry)
 
 		if (ct->handle) {
 			if (ct->td) {
-				if (ExternalHashTableDeleteKey(ct->td, ct->index, ct->handle)) {
+				rc = cdx_ehash_delete_entry(ct->td, ct->index,
+						ct->handle);
+				if (rc) {
 					DPA_ERROR("%s::unable to remove entry from hash table\n",
 							__FUNCTION__);
-					return FAILURE;
 				}
+				/* Hard failure: the key was not provably
+				 * unlinked, so the software flow must survive
+				 * as a tombstone - it keeps ACTION_REGISTER of
+				 * the same tuple answering ALREADY_EXISTS
+				 * (re-adding a possibly-live key would build a
+				 * duplicate-key bucket), and a later
+				 * DEREGISTER retries this delete (the timer is
+				 * already off the wheel; cdx_timer_del is
+				 * idempotent). ct/handle stay allocated: the
+				 * ucode may still walk them, and the query
+				 * path keeps sampling them safely. */
+				if (rc == FAILURE)
+					return rc;
+			} else {
+				/* No table descriptor: the entry was never
+				 * linked into a chain, so the allocation is
+				 * ours to release outright. */
+				ExternalHashTableEntryFree(ct->handle);
 			}
-			/* free table entry */
-			ExternalHashTableEntryFree(ct->handle);
+			ct->handle = NULL;
 		}
 		kfree(ct);
+		entry->ct = NULL;
 	}
+	/* Unlinked from hardware (or unsynced and parked in the quarantine):
+	 * the software flow is torn down on this arm either way; a later
+	 * lookup can no longer resolve to a flow whose hardware entry is
+	 * gone or pending release. */
 	hlist_del(&entry->node);
 	kfree(entry);
-	return SUCCESS;
+	return rc;
 }
 
 static int get_table_type(PCtEntry entry, uint32_t *type)

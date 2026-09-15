@@ -568,6 +568,21 @@ cdx_create_mcast_group(void *mcast_cmd, int bIsIPv6)
 err_ret:
 	if (pMcastGrpInfo != NULL) {
 		cdx_free_exthash_mcast_members(pMcastGrpInfo);
+		/*
+		 * pMcastGrpInfo->pCtEntry is only assigned inside
+		 * cdx_add_mcast_table_entry()'s success arm, after which the
+		 * caller returns 0 without taking err_ret — so today this
+		 * branch is unreachable.  Any future path that lands here
+		 * with pCtEntry already wired in would silently leak the CT
+		 * chain; freeing it here keeps the err_ret invariant "no
+		 * caller-owned allocation survives" intact.
+		 */
+		if (pMcastGrpInfo->pCtEntry != NULL) {
+			if (pMcastGrpInfo->pCtEntry->pRtEntry != NULL)
+				kfree(pMcastGrpInfo->pCtEntry->pRtEntry);
+			kfree(pMcastGrpInfo->pCtEntry);
+			pMcastGrpInfo->pCtEntry = NULL;
+		}
 		kfree(pMcastGrpInfo);
 	}
 	return (iRet);
@@ -579,13 +594,132 @@ cdx_free_exthash_mcast_members(struct mcast_group_info *pMcastGrpInfo)
 	unsigned int ii;
 
 	FreeMcastGrpID(pMcastGrpInfo->mctype, pMcastGrpInfo->grpid);
-	for (ii = 0; ii < pMcastGrpInfo->uiListenerCnt; ii++) {
-		if (pMcastGrpInfo->members[ii].tbl_entry != NULL)
+	/*
+	 * Walk every slot in members[], not just the first uiListenerCnt:
+	 * after a partial REMOVE followed by UPDATE, valid entries can sit
+	 * at any index, with invalid slots interleaved.  Using uiListenerCnt
+	 * as the loop bound misses the high-index valid entries and leaks
+	 * their ExternalHashTable allocations.  Filter by bIsValidEntry
+	 * (the invariant the rest of this file uses for slot ownership).
+	 */
+	for (ii = 0; ii < MC_MAX_LISTENERS_PER_GROUP; ii++) {
+		if (pMcastGrpInfo->members[ii].bIsValidEntry &&
+		    pMcastGrpInfo->members[ii].tbl_entry != NULL)
 			ExternalHashTableEntryFree(
 			    pMcastGrpInfo->members[ii].tbl_entry);
 	}
 
 	return (0);
+}
+
+/*
+ * Failure-path twin of cdx_free_exthash_mcast_members(): same walk over
+ * every members[] slot with the same bIsValidEntry filter, but the
+ * entries go into the quarantine instead of back to the allocator,
+ * because no HC barrier has proven the ucode is done walking them.
+ * Slots are cleared so nothing can reach the parked memory through the
+ * group again - the group itself is freed right after.
+ */
+static void
+mc_quarantine_members(struct mcast_group_info *pMcastGrpInfo)
+{
+	unsigned int ii;
+
+	for (ii = 0; ii < MC_MAX_LISTENERS_PER_GROUP; ii++) {
+		if (!pMcastGrpInfo->members[ii].bIsValidEntry)
+			continue;
+		cdx_ehash_quarantine_entry(pMcastGrpInfo->members[ii].tbl_entry);
+		pMcastGrpInfo->members[ii].tbl_entry = NULL;
+		pMcastGrpInfo->members[ii].bIsValidEntry = 0;
+	}
+}
+
+/*
+ * Whole-group teardown, shared by the group-DELETE command path, reset,
+ * and future callers so they can't diverge.
+ *
+ * The caller must already have unlinked pMcastGrpInfo from its bucket list.
+ *
+ * Order is load-bearing: the classifier entry leaves the hardware table
+ * first, then the listener table entries, then the CT/route backing memory.
+ * Freeing in the other direction would leave the ucode replicating through
+ * entries whose memory has already been handed back to the allocator.
+ */
+static void
+cdx_mcast_group_destroy(struct mcast_group_info *pMcastGrpInfo)
+{
+	int rc;
+
+	rc = delete_entry_from_classif_table(pMcastGrpInfo->pCtEntry);
+	if (rc == SUCCESS) {
+		/*
+		 * ExternalHashTableDeleteKey() syncs the PCD before
+		 * reporting success, so the classifier entry - and the
+		 * listener chain hanging off it - is provably out of reach
+		 * of the ucode walkers.  Release the members outright, and
+		 * clear the quarantine backlog on the strength of that same
+		 * barrier.
+		 */
+		cdx_free_exthash_mcast_members(pMcastGrpInfo);
+		cdx_ehash_quarantine_free_all();
+	} else if (rc == EN_EHASH_DELETE_UNSYNCED) {
+		/*
+		 * The classifier key left the table but the HC barrier
+		 * failed, so the listener entries are in exactly the state
+		 * the per-listener REMOVE path quarantines: gone from
+		 * software, unproven in hardware.  Park them rather than
+		 * free them.  The group id is released either way - it is
+		 * pure software bookkeeping, and
+		 * cdx_free_exthash_mcast_members() (skipped here) is where
+		 * it normally happens.
+		 *
+		 * The classifier's own table entry is in the same
+		 * unlinked-but-unsynced state as the members; parking it,
+		 * and releasing its software-only hw_ct wrapper, is
+		 * delete_entry_from_classif_table()'s job.
+		 */
+		FreeMcastGrpID(pMcastGrpInfo->mctype, pMcastGrpInfo->grpid);
+		mc_quarantine_members(pMcastGrpInfo);
+	} else {
+		/*
+		 * The classifier key was NOT provably unlinked (invalid
+		 * table state), so the ucode may still resolve it and
+		 * replicate through the listener chain indefinitely.  These
+		 * entries must never reach the allocator - not now, and not
+		 * via the quarantine, whose backlog is freed on the next
+		 * successful sync.  Leak them loudly and clear the slots so
+		 * nothing else can.  The group id is software bookkeeping
+		 * and is released regardless.
+		 */
+		unsigned int ii, leaked;
+
+		leaked = 0;
+		FreeMcastGrpID(pMcastGrpInfo->mctype, pMcastGrpInfo->grpid);
+		for (ii = 0; ii < MC_MAX_LISTENERS_PER_GROUP; ii++) {
+			if (!pMcastGrpInfo->members[ii].bIsValidEntry)
+				continue;
+			pMcastGrpInfo->members[ii].tbl_entry = NULL;
+			pMcastGrpInfo->members[ii].bIsValidEntry = 0;
+			leaked++;
+		}
+		/*
+		 * The classifier's own table entry leaks with the members
+		 * (it may still be linked); delete_entry_from_classif_table()
+		 * already abandoned it and released its software-only hw_ct
+		 * wrapper.
+		 */
+		DPA_ERROR("%s: classifier delete failed pre-unlink (rc %d), "
+		    "leaking %u listener entries + the classifier entry\n",
+		    __func__, rc, leaked);
+	}
+
+	if (pMcastGrpInfo->pCtEntry != NULL) {
+		if (pMcastGrpInfo->pCtEntry->pRtEntry != NULL)
+			kfree(pMcastGrpInfo->pCtEntry->pRtEntry);
+		kfree(pMcastGrpInfo->pCtEntry);
+		pMcastGrpInfo->pCtEntry = NULL;
+	}
+	kfree(pMcastGrpInfo);
 }
 
 static void
@@ -675,6 +809,13 @@ cdx_update_mcast_group(void *mcast_cmd, int bIsIPv6)
 	}
 
 	pMcastGrpInfo = pTempGrpInfo;
+
+	/*
+	 * Reclaim anything a previous failed barrier left parked before
+	 * touching the chain again.  Cheap: no-op unless something is
+	 * pending, and the group is resolved so the PCD handle is valid.
+	 */
+	cdx_ehash_quarantine_drain(pMcastGrpInfo->pCtEntry->ct->td);
 
 	if (uiNoOfListeners + pMcastGrpInfo->uiListenerCnt >
 	    MC_MAX_LISTENERS_PER_GROUP) {
@@ -835,17 +976,91 @@ cdx_delete_mcast_group_member(void *mcast_cmd, int bIsIPv6)
 
 	pMcastGrpInfo = pTempGrpInfo;
 
+	/*
+	 * Reclaim anything a previous failed barrier left parked before
+	 * touching the chain again.  Cheap: no-op unless something is
+	 * pending, and the group is resolved so the PCD handle is valid.
+	 */
+	cdx_ehash_quarantine_drain(pMcastGrpInfo->pCtEntry->ct->td);
+
+	/*
+	 * Validate every listener in the request actually exists in the
+	 * group before touching any state.  The count-match fast path
+	 * below (and the per-listener loop further down) used to assume
+	 * the request was well-formed: REMOVE [foo] against a group
+	 * { bar } whose count happened to equal 1 would hit the fast
+	 * path and delete the whole group, even though `foo` was never
+	 * a member.  Validating up-front rejects mismatched requests
+	 * atomically, before either path mutates members[] or unlinks
+	 * the group.
+	 *
+	 * Also dedupe by tracking which members[] slot each requested
+	 * name resolved to.  A request like REMOVE [a, a] against
+	 * { a, b } would otherwise validate twice against the same
+	 * member_id, the count-match fast path would trigger, and the
+	 * whole group would be wiped.  MC_MAX_LISTENERS_PER_GROUP is 8
+	 * so a u8 bitmap fits the slot space exactly.
+	 */
+	{
+		uint8_t seen_members = 0;
+		int found_id;
+
+		for (ii = 0; ii < (int)uiNoOfListeners; ii++) {
+			if (bIsIPv6)
+				pListener = &mcast6_group->output_list[ii];
+			else
+				pListener = &mcast4_group->output_list[ii];
+			found_id = Cdx_GetMcastMemberId(
+			    (char *)pListener->output_device_str,
+			    pMcastGrpInfo);
+			if (found_id == -1) {
+				DPA_ERROR("%s: member %s does not exist "
+				    "in group\n", __func__,
+				    pListener->output_device_str);
+				iRet = -1;
+				goto err_ret;
+			}
+			if (seen_members & (1u << found_id)) {
+				DPA_ERROR("%s: duplicate listener %s in "
+				    "REMOVE\n", __func__,
+				    pListener->output_device_str);
+				iRet = -1;
+				goto err_ret;
+			}
+			seen_members |= (1u << found_id);
+		}
+	}
+
 	/* If removing all listeners, delete the entire group */
 	if (pMcastGrpInfo->uiListenerCnt == uiNoOfListeners) {
-		delete_entry_from_classif_table(pMcastGrpInfo->pCtEntry);
-		cdx_free_exthash_mcast_members(pMcastGrpInfo);
-		if (pMcastGrpInfo->pCtEntry != NULL) {
-			if (pMcastGrpInfo->pCtEntry->pRtEntry != NULL)
-				kfree(pMcastGrpInfo->pCtEntry->pRtEntry);
-			kfree(pMcastGrpInfo->pCtEntry);
+		/*
+		 * Unlink the group from the per-bucket list under the
+		 * spinlock that also guards the FMan packet path's view of
+		 * the member chain (see the locking model above; query is
+		 * serialized out by ctrl->mutex and never contends on this
+		 * lock).  Once we release the lock, the node is gone from
+		 * the list and the chain it heads is unreachable from a new
+		 * lookup, so the rest of teardown (HW table evict + listener
+		 * tbl_entry frees/quarantine + pCtEntry/pRtEntry/group frees)
+		 * runs unlocked - those steps issue hardware completions and
+		 * can block waiting on them, which would needlessly hold up
+		 * every other bucket-N mutator for the duration.  The
+		 * per-listener REMOVE loop below likewise unlocks before its
+		 * own hardware completion wait.
+		 */
+		if (pMcastGrpInfo->mctype == 0) {
+			uiHash = HASH_MC4(pMcastGrpInfo->ipv4_daddr);
+			spin_lock(&mc4_spinlocks[uiHash]);
+			list_del(&pMcastGrpInfo->list);
+			spin_unlock(&mc4_spinlocks[uiHash]);
+		} else {
+			uiHash = HASH_MC6((void *)pMcastGrpInfo->ipv6_daddr);
+			spin_lock(&mc6_spinlocks[uiHash]);
+			list_del(&pMcastGrpInfo->list);
+			spin_unlock(&mc6_spinlocks[uiHash]);
 		}
-		list_del(&pMcastGrpInfo->list);
-		kfree(pMcastGrpInfo);
+
+		cdx_mcast_group_destroy(pMcastGrpInfo);
 		return (0);
 	}
 
@@ -926,10 +1141,29 @@ cdx_delete_mcast_group_member(void *mcast_cmd, int bIsIPv6)
 		if (ExternalHashTableFmPcdHcSync(
 		    pMcastGrpInfo->pCtEntry->ct->td)) {
 			DPA_ERROR("%s: FmPcdHcSync failed\n", __func__);
+			/*
+			 * The splice above already happened, so the entry
+			 * is out of the chain but has no barrier proving the
+			 * ucode left it.  It cannot be freed here and cannot
+			 * be unlinked a second time.  Park it; the next
+			 * mutator that reaches this PCD reclaims it.
+			 *
+			 * Abandon the rest of the batch: a sync failure is a
+			 * property of the HC channel, not of this listener,
+			 * so every remaining member would fail the same way
+			 * and pile up more quarantined entries.
+			 */
+			cdx_ehash_quarantine_entry(tbl_entry);
 			return (-1);
 		}
 
 		ExternalHashTableEntryFree(tbl_entry);
+		/*
+		 * That sync is a barrier for the whole PCD, not just this
+		 * entry - anything parked by an earlier failure is now
+		 * provably walker-free too, with no second round-trip.
+		 */
+		cdx_ehash_quarantine_free_all();
 	}
 
 err_ret:
@@ -1057,24 +1291,22 @@ static void
 mc4_reset(void)
 {
 	struct mcast_group_info *grp;
-	struct list_head *pos, *tmp;
 	int ii;
 
 	for (ii = 0; ii < MC4_NUM_HASH_ENTRIES; ii++) {
-		spin_lock(&mc4_spinlocks[ii]);
-		list_for_each_safe(pos, tmp, &mc4_grp_list[ii]) {
-			grp = list_entry(pos, struct mcast_group_info, list);
-			delete_entry_from_classif_table(grp->pCtEntry);
-			cdx_free_exthash_mcast_members(grp);
-			list_del(pos);
-			if (grp->pCtEntry != NULL) {
-				if (grp->pCtEntry->pRtEntry != NULL)
-					kfree(grp->pCtEntry->pRtEntry);
-				kfree(grp->pCtEntry);
+		for (;;) {
+			spin_lock(&mc4_spinlocks[ii]);
+			if (list_empty(&mc4_grp_list[ii])) {
+				spin_unlock(&mc4_spinlocks[ii]);
+				break;
 			}
-			kfree(grp);
+			grp = list_first_entry(&mc4_grp_list[ii],
+			    struct mcast_group_info, list);
+			list_del(&grp->list);
+			spin_unlock(&mc4_spinlocks[ii]);
+
+			cdx_mcast_group_destroy(grp);
 		}
-		spin_unlock(&mc4_spinlocks[ii]);
 	}
 }
 
@@ -1082,24 +1314,22 @@ static void
 mc6_reset(void)
 {
 	struct mcast_group_info *grp;
-	struct list_head *pos, *tmp;
 	int ii;
 
 	for (ii = 0; ii < MC6_NUM_HASH_ENTRIES; ii++) {
-		spin_lock(&mc6_spinlocks[ii]);
-		list_for_each_safe(pos, tmp, &mc6_grp_list[ii]) {
-			grp = list_entry(pos, struct mcast_group_info, list);
-			delete_entry_from_classif_table(grp->pCtEntry);
-			cdx_free_exthash_mcast_members(grp);
-			list_del(pos);
-			if (grp->pCtEntry != NULL) {
-				if (grp->pCtEntry->pRtEntry != NULL)
-					kfree(grp->pCtEntry->pRtEntry);
-				kfree(grp->pCtEntry);
+		for (;;) {
+			spin_lock(&mc6_spinlocks[ii]);
+			if (list_empty(&mc6_grp_list[ii])) {
+				spin_unlock(&mc6_spinlocks[ii]);
+				break;
 			}
-			kfree(grp);
+			grp = list_first_entry(&mc6_grp_list[ii],
+			    struct mcast_group_info, list);
+			list_del(&grp->list);
+			spin_unlock(&mc6_spinlocks[ii]);
+
+			cdx_mcast_group_destroy(grp);
 		}
-		spin_unlock(&mc6_spinlocks[ii]);
 	}
 }
 
