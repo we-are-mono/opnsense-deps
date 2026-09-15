@@ -71,6 +71,13 @@ void cmm_conn_fini(struct cmm_global *g);
 void cmm_conn_event(struct cmm_global *g);
 
 /*
+ * Retry offload for connections rejected earlier (e.g. CDX didn't
+ * know the interface yet). Returns the number successfully retried.
+ * Safe to call from an event handler as well as the periodic pass.
+ */
+unsigned int cmm_conn_retry_rejected(struct cmm_global *g);
+
+/*
  * Periodic maintenance: retry offload for pending connections,
  * garbage-collect unreferenced routes, log stats.
  */

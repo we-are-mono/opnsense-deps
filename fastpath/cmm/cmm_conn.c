@@ -761,12 +761,19 @@ cmm_conn_event(struct cmm_global *g)
 }
 
 /*
- * Periodic maintenance: retry offload for connections that are
- * tracked but not yet offloaded (e.g., after interface reassignment
- * or route change), garbage-collect unreferenced routes, and log stats.
+ * fpp_rejected is armed so the next route event re-resolves and
+ * reprograms the holder (we-are-mono/ASK's FPP_NEEDS_UPDATE plays the
+ * same role for its tunnels/sockets/SAs). Called from
+ * cmm_route_handle_change() so a connection rejected only because
+ * CDX didn't know its interface yet (issue #11's boot race: cmm
+ * starting before WAN finishes its post-DHCP reconfiguration)
+ * recovers as soon as a route event arrives, whatever event that is
+ * - not bounded by CMM_MAINT_MS. Also called from the periodic
+ * maintenance pass as a backstop for rejections with no dedicated
+ * event (e.g. CDX-side transient failures).
  */
-void
-cmm_conn_maintenance(struct cmm_global *g)
+unsigned int
+cmm_conn_retry_rejected(struct cmm_global *g)
 {
 	struct cmm_conn *conn;
 	struct list_head *pos;
@@ -779,11 +786,50 @@ cmm_conn_maintenance(struct cmm_global *g)
 			conn = container_of(pos, struct cmm_conn,
 			    hash_entry);
 			if (!(conn->flags & CONN_F_OFFLOADED)) {
-				if (conn_try_offload(g, conn) == 0)
+				int was_rejected =
+				    (conn->orig_route != NULL &&
+				    conn->orig_route->fpp_rejected) ||
+				    (conn->rep_route != NULL &&
+				    conn->rep_route->fpp_rejected);
+
+				if (conn->orig_route != NULL)
+					conn->orig_route->fpp_rejected = 0;
+				if (conn->rep_route != NULL)
+					conn->rep_route->fpp_rejected = 0;
+				if (conn_try_offload(g, conn) == 0) {
 					retried++;
+					if (was_rejected)
+						/* Always log recovery, so a boot-time rejection is easy to confirm fixed. */
+						cmm_print(CMM_LOG_ERR,
+						    "conn: route id=%u "
+						    "recovered from earlier "
+						    "CDX rejection, offload "
+						    "now active",
+						    conn->orig_route->fpp_id);
+				}
 			}
 		}
 	}
+
+	return (retried);
+}
+
+/*
+ * Periodic maintenance: retry offload for connections rejected for
+ * reasons with no dedicated event (backstop for
+ * cmm_conn_retry_rejected()'s event-driven callers), garbage-collect
+ * unreferenced routes, and log stats.
+ */
+void
+cmm_conn_maintenance(struct cmm_global *g)
+{
+	unsigned int retried;
+
+	/* Catch gateway MAC changes before retrying offload, so anything
+	 * just invalidated re-offloads in this same pass. */
+	cmm_route_check_neigh_changes(g);
+
+	retried = cmm_conn_retry_rejected(g);
 
 	if (retried > 0)
 		cmm_print(CMM_LOG_INFO,

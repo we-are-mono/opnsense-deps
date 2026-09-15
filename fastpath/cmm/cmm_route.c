@@ -376,6 +376,13 @@ cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
 	/* Re-evaluate tunnel and socket registrations after route changes */
 	cmm_tunnel_route_update(g);
 	cmm_socket_route_update(g);
+
+	/* Let this route event retry anything CDX rejected earlier for
+	 * lack of a registered interface (issue #11's boot race: cmm
+	 * starting before WAN finishes its post-DHCP reconfiguration) -
+	 * the interface simply exists by now, whatever event this is.
+	 * Otherwise recovery waits on the next CMM_MAINT_MS tick. */
+	(void)cmm_conn_retry_rejected(g);
 }
 
 /*
