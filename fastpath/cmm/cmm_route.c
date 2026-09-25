@@ -33,29 +33,37 @@
 static struct list_head route_hash[ROUTE_HASH_TOTAL];
 
 static inline unsigned int
-route_hash_index(sa_family_t af, const void *dst)
+route_hash_index(sa_family_t af, const void *dst, int oif_hint)
 {
 	if (af == AF_INET)
-		return (jhash(dst, 4, 0) % ROUTE_HASH_SIZE);
+		return (jhash(dst, 4, (uint32_t)oif_hint) % ROUTE_HASH_SIZE);
 	else
-		return (jhash(dst, 16, 0) % ROUTE_HASH_SIZE) + ROUTE_HASH_SIZE;
+		return (jhash(dst, 16, (uint32_t)oif_hint) % ROUTE_HASH_SIZE)
+		    + ROUTE_HASH_SIZE;
 }
 
+/*
+ * Find a cached route by (family, dst, oif_hint).  oif_hint is part
+ * of the key so a route-to'd connection never collides with a plain
+ * default-routed one to the same destination - they need genuinely
+ * different routes, not just different metadata on a shared one.
+ */
 static struct cmm_route *
-route_find(sa_family_t af, const void *dst)
+route_find(sa_family_t af, const void *dst, int oif_hint)
 {
 	struct list_head *bucket, *pos;
 	struct cmm_route *rt;
 	unsigned int h;
 	int alen;
 
-	h = route_hash_index(af, dst);
+	h = route_hash_index(af, dst, oif_hint);
 	bucket = &route_hash[h];
 	alen = (af == AF_INET) ? 4 : 16;
 
 	for (pos = list_first(bucket); pos != bucket; pos = list_next(pos)) {
 		rt = container_of(pos, struct cmm_route, entry);
-		if (rt->family == af && memcmp(rt->dst, dst, alen) == 0)
+		if (rt->family == af && rt->oif_hint == oif_hint &&
+		    memcmp(rt->dst, dst, alen) == 0)
 			return (rt);
 	}
 	return (NULL);
@@ -110,6 +118,16 @@ route_resolve(struct cmm_global *g, struct cmm_route *rt)
 		rt->oif_index = addrs.ifp->sdl_index;
 	} else {
 		rt->oif_index = rtm->rtm_index;
+	}
+
+	/* pf route-to/reply-to sent this connection out a specific
+	 * interface - honor that instead of the default FIB's answer,
+	 * which knows nothing about pf's per-connection routing rules. */
+	if (rt->oif_hint != 0) {
+		cmm_print(CMM_LOG_DEBUG,
+		    "route: resolve fib_oif=%d overridden to oif_hint=%d",
+		    rt->oif_index, rt->oif_hint);
+		rt->oif_index = rt->oif_hint;
 	}
 
 	/* Get gateway */
@@ -223,13 +241,14 @@ cmm_route_alloc_id(struct cmm_global *g)
 }
 
 struct cmm_route *
-cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst)
+cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst,
+    int oif_hint)
 {
 	struct cmm_route *rt;
 	unsigned int h;
 	int alen;
 
-	rt = route_find(af, dst);
+	rt = route_find(af, dst, oif_hint);
 	if (rt != NULL) {
 		rt->refcount++;
 		return (rt);
@@ -243,6 +262,7 @@ cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst)
 
 	rt->family = af;
 	memcpy(rt->dst, dst, alen);
+	rt->oif_hint = oif_hint;
 	rt->fpp_id = cmm_route_alloc_id(g);
 	if (rt->fpp_id == 0) {
 		cmm_print(CMM_LOG_ERR, "route: route ID space exhausted");
@@ -252,7 +272,7 @@ cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst)
 	rt->entry.next = NULL;
 	rt->entry.prev = NULL;
 
-	h = route_hash_index(af, dst);
+	h = route_hash_index(af, dst, oif_hint);
 	list_add(&route_hash[h], &rt->entry);
 
 	if (route_resolve(g, rt) < 0) {

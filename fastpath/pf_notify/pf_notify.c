@@ -165,6 +165,14 @@ pfn_fill_event(struct pfn_event *ev, uint8_t type, struct pf_kstate *s)
 	ev->state_flags = s->state_flags;
 	strlcpy(ev->ifname, s->kif->pfik_name, sizeof(ev->ifname));
 
+	/* route-to/reply-to egress interface, if pf overrode the route
+	 * for this state - 0 means no override, use the normal route.
+	 * if_getindex() is the public accessor since struct ifnet's
+	 * body isn't visible outside the core kernel/net sources. */
+	if (s->act.rt != PF_NOPFROUTE && s->act.rt_kif != NULL &&
+	    s->act.rt_kif->pfik_ifp != NULL)
+		ev->rt_ifindex = if_getindex(s->act.rt_kif->pfik_ifp);
+
 	/* Wire key (PF_SK_WIRE = 0) */
 	memcpy(ev->key[0].addr[0], &s->key[PF_SK_WIRE]->addr[0],
 	    sizeof(ev->key[0].addr[0]));

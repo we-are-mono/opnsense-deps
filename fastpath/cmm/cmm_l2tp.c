@@ -88,7 +88,7 @@ l2tp_register(struct cmm_global *g, struct cmm_interface *itf,
 	sk->dscp = cmd->dscp;
 
 	/* Resolve route to peer */
-	sk->route = cmm_route_get(g, sk->af, sk->daddr);
+	sk->route = cmm_route_get(g, sk->af, sk->daddr, 0);
 	if (sk->route == NULL) {
 		cmm_print(CMM_LOG_WARN,
 		    "l2tp: %s: no route to peer", cmd->ifname);

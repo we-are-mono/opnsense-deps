@@ -373,7 +373,7 @@ cmm_socket_ctrl_open(struct cmm_global *g, int client_fd,
 	sk->dscp = cmd->dscp;
 
 	/* Resolve route to destination */
-	sk->route = cmm_route_get(g, sk->af, sk->daddr);
+	sk->route = cmm_route_get(g, sk->af, sk->daddr, 0);
 	if (sk->route == NULL) {
 		cmm_print(CMM_LOG_WARN,
 		    "socket: open: id=%u no route to destination", sk->id);

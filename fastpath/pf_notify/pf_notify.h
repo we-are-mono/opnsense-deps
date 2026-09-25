@@ -62,7 +62,11 @@ struct pfn_event {
 	uint16_t		_pad1;
 	char			ifname[16];	/* IFNAMSIZ */
 	struct pfn_state_key	key[2];		/* [0]=wire, [1]=stack */
-	uint8_t			_pad2[8];	/* pad to 128 bytes */
+	uint32_t		rt_ifindex;	/* route-to/reply-to egress
+						 * ifindex, 0 if pf didn't
+						 * override the route for
+						 * this state */
+	uint8_t			_pad2[4];	/* pad to 128 bytes */
 };
 
 #ifdef _KERNEL

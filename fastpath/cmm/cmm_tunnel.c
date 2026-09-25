@@ -171,7 +171,7 @@ cmm_tunnel_register(struct cmm_global *g, struct cmm_interface *itf)
 	}
 
 	/* Resolve route to remote endpoint */
-	rt = cmm_route_get(g, itf->tnl_family, itf->tnl_remote);
+	rt = cmm_route_get(g, itf->tnl_family, itf->tnl_remote, 0);
 	if (rt == NULL) {
 		cmm_print(CMM_LOG_WARN,
 		    "tunnel: %s no route to remote endpoint",
