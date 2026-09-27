@@ -55,6 +55,9 @@
 typedef void (*cdx_deinit_func)(void);
 void register_cdx_deinit_func(cdx_deinit_func func);
 extern atomic_t num_active_connections;
+extern atomic_t cdx_stat_hc_delete_unsynced;
+extern atomic_t cdx_stat_hc_delete_leaked;
+extern atomic_t cdx_stat_hc_delete_quarantined;
 extern struct cdx_fman_info *fman_info;
 
 /* qosconnmark definitions */

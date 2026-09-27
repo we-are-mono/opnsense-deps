@@ -42,7 +42,7 @@ SETSDIR?=	/usr/local/opnsense/build/${OPS_SETTINGS}/aarch64/sets
 KMOD_ARGS=	SYSDIR=${SRCDIR}/sys \
 		KERNBUILDDIR=${KERNBUILDDIR} \
 		MACHINE=arm64 MACHINE_ARCH=aarch64 \
-		CC="cc --target=aarch64-unknown-freebsd14.3" LD=ld.lld
+		CC="cc --target=aarch64-unknown-freebsd15.1" LD=ld.lld
 
 # Local build directory for userspace components
 BUILDDIR?=	${OPSDIR}/_build
@@ -264,7 +264,7 @@ package: all
 	sed 's/%%VERSION%%/${PKG_VERSION}/' ${PKG_METADIR}/+MANIFEST \
 	    > ${PKG_STAGEDIR}/+MANIFEST
 	# Build package (ABI override for cross-compilation on amd64 host)
-	ABI=FreeBSD:14:aarch64 pkg create \
+	ABI=FreeBSD:15:aarch64 pkg create \
 	    -M ${PKG_STAGEDIR}/+MANIFEST -p ${PKG_METADIR}/plist \
 	    -r ${PKG_STAGEDIR} -o ${DISTDIR}/
 	@echo "==> Package: ${DISTDIR}/mono-gateway-${PKG_VERSION}.pkg"

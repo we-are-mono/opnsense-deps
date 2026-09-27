@@ -19,6 +19,7 @@
 #include "cmm.h"
 #include "cmm_vlan.h"
 #include "cmm_itf.h"
+#include "cmm_route.h"
 
 static int
 cmm_vlan_register(struct cmm_global *g, struct cmm_interface *itf)
@@ -38,6 +39,15 @@ cmm_vlan_register(struct cmm_global *g, struct cmm_interface *itf)
 		    "vlan: %s parent idx=%d not found",
 		    itf->ifname, itf->parent_ifindex);
 		return (-1);
+	}
+	/* CDX links the VLAN to its parent's entry, so a LAGG parent must
+	 * be registered first.  cmm_vlan_register_children() catches up. */
+	if ((parent->itf_flags & ITF_F_LAGG) &&
+	    !(parent->itf_flags & ITF_F_FPP_LAGG)) {
+		cmm_print(CMM_LOG_DEBUG,
+		    "vlan: %s waiting for %s to register",
+		    itf->ifname, parent->ifname);
+		return (0);
 	}
 
 	memset(&cmd, 0, sizeof(cmd));
@@ -78,6 +88,9 @@ cmm_vlan_deregister(struct cmm_global *g, struct cmm_interface *itf)
 
 	if (!(itf->itf_flags & ITF_F_FPP_VLAN))
 		return (0);
+
+	/* CDX drops the VLAN's flows with it; tear down ours to match. */
+	cmm_route_invalidate_by_oif(g, itf->ifindex);
 
 	parent = cmm_itf_find_by_index(itf->parent_ifindex);
 
@@ -135,4 +148,28 @@ cmm_vlan_notify(struct cmm_global *g, struct cmm_interface *itf)
 		cmm_vlan_register(g, itf);
 	else if (!(itf->flags & IFF_UP) && (itf->itf_flags & ITF_F_FPP_VLAN))
 		cmm_vlan_deregister(g, itf);
+}
+
+static int
+vlan_notify_cb(struct cmm_global *g, struct cmm_interface *itf)
+{
+	cmm_vlan_notify(g, itf);
+	return (0);
+}
+
+/*
+ * CDX links each VLAN to its parent's entry, which is freed when the
+ * parent is deregistered.  Linux takes VLANs down with their parent;
+ * FreeBSD leaves them up, so the LAGG code does it through these.
+ */
+void
+cmm_vlan_deregister_children(struct cmm_global *g, int parent_ifindex)
+{
+	cmm_itf_foreach_vlan_of(g, parent_ifindex, cmm_vlan_deregister);
+}
+
+void
+cmm_vlan_register_children(struct cmm_global *g, int parent_ifindex)
+{
+	cmm_itf_foreach_vlan_of(g, parent_ifindex, vlan_notify_cb);
 }

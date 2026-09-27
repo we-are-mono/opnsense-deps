@@ -56,4 +56,8 @@ void cmm_neigh_invalidate(sa_family_t af, const void *ip);
 /* Mark all neighbors as stale (full reset) */
 void cmm_neigh_flush_all(void);
 
+/* Re-resolve all resolved neighbors; on_changed fires per MAC change */
+void cmm_neigh_recheck_all(struct cmm_global *g,
+    void (*on_changed)(struct cmm_neigh *neigh, void *arg), void *arg);
+
 #endif /* CMM_NEIGH_H */

@@ -141,6 +141,11 @@ static struct selinfo	pfn_rsel;
 static int		pfn_open;	/* only one client */
 static struct cdev	*pfn_cdev;
 
+/* INSERT events currently have no consumer beyond a TRACE log, so
+ * they're off by default - every one still costs a ring slot and
+ * mutex round-trip that READY/DELETE could otherwise use. */
+static int		pfn_notify_insert;
+
 /* Statistics */
 static uint64_t		pfn_events_total;
 static uint64_t		pfn_events_dropped;
@@ -164,6 +169,14 @@ pfn_fill_event(struct pfn_event *ev, uint8_t type, struct pf_kstate *s)
 	ev->creatorid = s->creatorid;
 	ev->state_flags = s->state_flags;
 	strlcpy(ev->ifname, s->kif->pfik_name, sizeof(ev->ifname));
+
+	/* route-to/reply-to egress interface, if pf overrode the route
+	 * for this state - 0 means no override, use the normal route.
+	 * if_getindex() is the public accessor since struct ifnet's
+	 * body isn't visible outside the core kernel/net sources. */
+	if (s->act.rt != PF_NOPFROUTE && s->act.rt_kif != NULL &&
+	    s->act.rt_kif->pfik_ifp != NULL)
+		ev->rt_ifindex = if_getindex(s->act.rt_kif->pfik_ifp);
 
 	/* Wire key (PF_SK_WIRE = 0) */
 	memcpy(ev->key[0].addr[0], &s->key[PF_SK_WIRE]->addr[0],
@@ -213,15 +226,8 @@ pfn_insert_state(struct pf_kstate *s)
 {
 	struct pfn_event ev;
 
-	if (!pfn_open)
+	if (!pfn_open || !pfn_notify_insert)
 		return;
-
-	/* Mark state as sloppy so PF skips strict TCP sequence validation.
-	 * When CDX offloads a flow, PF's seq tracking goes stale. During
-	 * failover, packets return to PF — sloppy mode prevents PF from
-	 * dropping them as "BAD state" due to out-of-window sequence.
-	 * PFSTATE_SLOPPY is 0x0002 (netpfil/pf/pf.h). */
-	s->state_flags |= 0x0002;
 
 	pfn_fill_event(&ev, PFN_EVENT_INSERT, s);
 	pfn_queue_event(&ev);
@@ -265,6 +271,10 @@ pfn_update_state(struct pf_kstate *s)
 
 	if (!ready)
 		return;
+
+	/* Sloppy tracking (0x0002) only needed once a flow is an offload
+	 * candidate, so it's set here at READY, not at INSERT for every state. */
+	s->state_flags |= 0x0002;
 
 	/* Cheap lockless pre-check — harmless races just produce a
 	 * duplicate READY event that CMM handles idempotently. */
@@ -418,8 +428,10 @@ pfn_dev_ioctl(struct cdev *dev __unused, u_long cmd, caddr_t data,
 		s = pf_find_state_byid(entries[i].id, entries[i].creatorid);
 		if (s == NULL) {
 			pfn_counter_misses++;
+			entries[i].missing = 1;
 			continue;
 		}
+		entries[i].missing = 0;
 		s->packets[0] += entries[i].packets[0];
 		s->packets[1] += entries[i].packets[1];
 		s->bytes[0] += entries[i].bytes[0];
@@ -436,8 +448,13 @@ pfn_dev_ioctl(struct cdev *dev __unused, u_long cmd, caddr_t data,
 
 	CURVNET_RESTORE();
 
+	/* Report which entries were missing so CMM can drop its own
+	 * tracking for a flow PF no longer has, rather than depend on a
+	 * DELETE event that a full ring may have already dropped. */
+	error = copyout(entries, upd->entries, upd->count * sizeof(*entries));
+
 	free(entries, M_TEMP);
-	return (0);
+	return (error);
 }
 
 static int
@@ -544,6 +561,11 @@ pfn_sysctl_init(void)
 	    OID_AUTO, "ring_size", CTLFLAG_RD,
 	    SYSCTL_NULL_INT_PTR, PFN_RING_SIZE,
 	    "Ring buffer capacity (events)");
+
+	SYSCTL_ADD_INT(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
+	    OID_AUTO, "notify_insert", CTLFLAG_RW,
+	    &pfn_notify_insert, 0,
+	    "Queue INSERT events (off by default - TRACE-log only consumer)");
 
 	SYSCTL_ADD_U64(&pfn_sysctl_ctx, SYSCTL_CHILDREN(parent),
 	    OID_AUTO, "events_total", CTLFLAG_RD,

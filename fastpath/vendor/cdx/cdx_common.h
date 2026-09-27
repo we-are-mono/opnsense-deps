@@ -346,6 +346,35 @@ struct hw_ct_sibling {
 	uint32_t port_id;
 };
 
+/*
+ * REPLICATE_PKT chain member for one flow through a laggproto
+ * broadcast LAGG. Unlike hw_ct_sibling (independent, individually-
+ * matched alternate keys - only one ever matches a real packet), these
+ * are physically chained (en_exthash_tbl_entry->next / hashentry.
+ * next_entry_hi/lo) so FMan can walk from the primary entry's
+ * REPLICATE_PKT to all of them for one matched packet - the same way
+ * multicast listener entries are chained off a classifier entry
+ * (cdx_mc_freebsd.c), and like those, a replica is never independently
+ * key-matched/added to a hash table, so there's no td/index to delete
+ * it by. Each carries this flow's own real destination MAC/L2 info -
+ * FreeBSD's own lagg_bcast_start() (if_lagg.c) clones the same
+ * already-resolved frame unchanged to every member port, so one
+ * flow's one real MAC is correct for every replica, the same way it's
+ * correct for the primary entry.
+ *
+ * Scoped and owned entirely by the flow: built alongside the primary
+ * entry, freed or quarantined together with it based on the primary's
+ * own delete outcome (delete_entry_from_classif_table()) - mirroring
+ * cdx_free_exthash_mcast_members()/mc_quarantine_members()'s reasoning
+ * that a listener/replica is only ever provably out of hardware reach
+ * once the classifier entry pointing at it has been deleted with a
+ * proven HC barrier, never on its own.
+ */
+struct hw_ct_replica {
+	struct hw_ct_replica *next;
+	void *handle;	/* struct en_exthash_tbl_entry* */
+};
+
 /* hardware connection tracker info */
 struct hw_ct {
 	void *fm_ctx;
@@ -362,6 +391,7 @@ struct hw_ct {
 	uint64_t reset_pkts;
 	uint64_t reset_bytes;
 	struct hw_ct_sibling *siblings; /* extra port entries for LAGG */
+	struct hw_ct_replica *replicas; /* REPLICATE_PKT chain for laggproto broadcast */
 };
 
 //uncomment to include flow timestamps
@@ -393,6 +423,27 @@ void cdx_deinit_frag_module(void);
 int cdx_init_ip_reassembly(void);
 
 void hw_ct_get_active(struct hw_ct *ct);
+
+/* External-hash entry disposition (ISSUES.md A95; implemented in
+ * cdx_ehash.c, where the full rationale lives).
+ *
+ * Every path that removes a key from an FMAN external hash table must go
+ * through cdx_ehash_delete_entry(): ExternalHashTableDeleteKey()'s
+ * tri-state (fm_ehash.h) decides whether the table entry may be freed,
+ * must be parked until a later host-command barrier proves the ucode has
+ * left it, or must be leaked forever. cdx_ehash_delete_entry() owns the
+ * handle on every arm; callers free only their own software wrappers.
+ *
+ * Serialization: no lock of their own. Callers run under the FCI
+ * ctrl.mutex (cdx_cmdhandler_freebsd.c) or at module exit with no handler
+ * in flight. Not callable under a spinlock: the barriers busy-wait on
+ * host-command completion. */
+int cdx_ehash_delete_entry(void *td, uint16_t index, void *handle);
+void cdx_ehash_quarantine_entry(void *tbl_entry);
+void cdx_ehash_quarantine_free_all(void);
+void cdx_ehash_quarantine_drain(void *td);
+void cdx_ehash_quarantine_abandon(void);
+unsigned int cdx_ehash_quarantine_pending(void);
 
 int cdx_set_expt_rate(uint32_t fm_index, uint32_t type, uint32_t limit, uint32_t burst_size);
 int cdx_get_expt_rate(void *cmd);

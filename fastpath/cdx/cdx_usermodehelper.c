@@ -23,6 +23,7 @@
 #include <sys/kthread.h>
 #include <sys/unistd.h>
 #include <sys/imgact.h>
+#include <sys/mutex.h>
 #include <sys/sched.h>
 #include <sys/ucred.h>
 #include <sys/wait.h>
@@ -191,8 +192,17 @@ cdx_call_usermodehelper(const char *path, char *const argv[],
 	 * Wait for the child to exit.  This blocks the current thread
 	 * (the kldload caller) until dpa_app completes — equivalent
 	 * to Linux's UMH_WAIT_PROC.
+	 *
+	 * kldload runs module init with Giant held (linker_file_sysuninit()
+	 * takes it around every SYSINIT/module event callback), but
+	 * kern_wait() asserts Giant is NOT held (thread_wait() -> Giant
+	 * MA_NOTOWNED, kern_thread.c) since reaping a child can sleep.
+	 * Drop it for just this call and restore it after, same as any
+	 * other Giant-held caller that needs to invoke wait(2) internals.
 	 */
+	DROP_GIANT();
 	error = kern_wait(curthread, pid, &status, 0, NULL);
+	PICKUP_GIANT();
 	if (error != 0) {
 		printf("cdx: umh: kern_wait (pid %d) failed: %d\n",
 		    pid, error);

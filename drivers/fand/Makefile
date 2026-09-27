@@ -9,7 +9,7 @@
 
 SYSROOT?=	/usr/obj/usr/src/arm64.aarch64/tmp
 CC?=		cc
-TARGET?=	--target=aarch64-unknown-freebsd14.3
+TARGET?=	--target=aarch64-unknown-freebsd15.1
 
 CFLAGS=		-O2 -pipe -Wall --sysroot=${SYSROOT} ${TARGET}
 LDFLAGS=	${TARGET} --sysroot=${SYSROOT}

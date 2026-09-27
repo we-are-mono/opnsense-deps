@@ -26,8 +26,11 @@ struct cmm_route {
 	uint8_t			dst[16];	/* destination (net order) */
 	uint8_t			gw[16];		/* gateway / next-hop */
 	uint8_t			src[16];	/* preferred source */
+	int			oif_hint;	/* pf route-to override, part
+						 * of the cache key; 0=none */
 	int			oif_index;	/* output interface index */
-	int			iif_index;	/* input interface index (set by conn) */
+	int			iif_index;	/* input interface, part of
+						 * the cache key; 0=none */
 	uint16_t		mtu;
 	uint32_t		rt_flags;	/* RTF_GATEWAY, RTF_HOST, ... */
 	uint32_t		fpp_id;		/* FPP route ID */
@@ -42,10 +45,13 @@ void cmm_route_fini(void);
 
 /*
  * Get route for destination.  Resolves via route socket RTM_GET.
+ * oif_hint, if non-zero, overrides the resolved output interface with
+ * a pf route-to/reply-to egress interface - use 0 for normal routing.
+ * iif is the input interface flows using this route arrive on, or 0.
  * Returns NULL if no route.  Caller must call cmm_route_put().
  */
 struct cmm_route *cmm_route_get(struct cmm_global *g, sa_family_t af,
-    const void *dst);
+    const void *dst, int oif_hint, int iif);
 
 /* Release reference */
 void cmm_route_put(struct cmm_route *rt);
@@ -59,6 +65,13 @@ void cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
 
 /* Invalidate all routes using a specific output interface */
 void cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index);
+
+/* Invalidate all routes pointing at a neighbor (its MAC changed) */
+void cmm_route_invalidate_by_neigh(struct cmm_global *g,
+    struct cmm_neigh *neigh);
+
+/* Poll for gateway MAC changes and invalidate affected routes */
+void cmm_route_check_neigh_changes(struct cmm_global *g);
 
 /* Allocate a new unique route ID */
 uint32_t cmm_route_alloc_id(struct cmm_global *g);

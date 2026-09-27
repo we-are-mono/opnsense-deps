@@ -701,6 +701,8 @@ display_ehash_tbl_entry(struct en_ehash_entry *entry __attribute__((unused)),
 {
 }
 
+#define EN_EHASH_DELETE_UNSYNCED	(-2)
+
 /* ----------------------------------------------------------------
  * ExternalHash API
  * ---------------------------------------------------------------- */
