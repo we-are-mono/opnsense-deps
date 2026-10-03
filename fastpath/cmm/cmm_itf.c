@@ -39,6 +39,7 @@
 #include "cmm_pppoe.h"
 #include "cmm_mcast.h"
 #include "cmm_lagg.h"
+#include "cmm_route.h"
 
 static struct list_head itf_hash[ITF_HASH_SIZE];
 
@@ -105,6 +106,53 @@ itf_create(const char *name, int ifindex)
 	list_add(&itf_hash[h], &itf->entry);
 
 	return (itf);
+}
+
+static void
+itf_free(struct cmm_interface *itf)
+{
+	struct cmm_ifaddr *ifa;
+	struct list_head *pos, *tmp;
+
+	pos = list_first(&itf->addrs);
+	while (pos != &itf->addrs) {
+		tmp = list_next(pos);
+		ifa = container_of(pos, struct cmm_ifaddr, entry);
+		list_del(&ifa->entry);
+		free(ifa);
+		pos = tmp;
+	}
+
+	list_del(&itf->entry);
+	free(itf);
+}
+
+/*
+ * The interface is gone.  Like ASK on RTM_DELLINK, take it down in
+ * every module first, then remove it, so a reused ifindex starts clean.
+ */
+static void
+itf_remove(struct cmm_global *g, struct cmm_interface *itf)
+{
+	int was_bridge;
+
+	cmm_print(CMM_LOG_INFO, "itf: %s idx=%d removed",
+	    itf->ifname, itf->ifindex);
+
+	itf->flags &= ~IFF_UP;
+	cmm_lagg_notify(g, itf);
+	cmm_vlan_notify(g, itf);
+	cmm_tunnel_notify(g, itf);
+	cmm_wifi_notify(g, itf);
+	cmm_pppoe_notify(g, itf);
+	cmm_mcast_itf_update(g, itf->ifname, 0);
+	cmm_route_invalidate_by_oif(g, itf->ifindex);
+
+	was_bridge = (itf->itf_flags & ITF_F_BRIDGE) != 0;
+	itf_free(itf);
+
+	if (was_bridge)
+		cmm_bridge_itf_update(g);
 }
 
 /*
@@ -432,8 +480,7 @@ void
 cmm_itf_fini(void)
 {
 	struct cmm_interface *itf;
-	struct cmm_ifaddr *ifa;
-	struct list_head *pos, *tmp, *apos, *atmp;
+	struct list_head *pos, *tmp;
 	int i;
 
 	for (i = 0; i < ITF_HASH_SIZE; i++) {
@@ -441,23 +488,27 @@ cmm_itf_fini(void)
 		while (pos != &itf_hash[i]) {
 			tmp = list_next(pos);
 			itf = container_of(pos, struct cmm_interface, entry);
-
-			/* Free addresses */
-			apos = list_first(&itf->addrs);
-			while (apos != &itf->addrs) {
-				atmp = list_next(apos);
-				ifa = container_of(apos, struct cmm_ifaddr,
-				    entry);
-				list_del(&ifa->entry);
-				free(ifa);
-				apos = atmp;
-			}
-
-			list_del(&itf->entry);
-			free(itf);
+			itf_free(itf);
 			pos = tmp;
 		}
 	}
+}
+
+void
+cmm_itf_handle_ifannounce(struct cmm_global *g, void *msg, int msglen)
+{
+	struct if_announcemsghdr *ifan = msg;
+	struct cmm_interface *itf;
+
+	(void)msglen;
+
+	/* Arrivals are picked up by the RTM_IFINFO that follows. */
+	if (ifan->ifan_what != IFAN_DEPARTURE)
+		return;
+
+	itf = cmm_itf_find_by_index(ifan->ifan_index);
+	if (itf != NULL)
+		itf_remove(g, itf);
 }
 
 void
@@ -465,16 +516,22 @@ cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen)
 {
 	struct if_msghdr *ifm = msg;
 	struct cmm_interface *itf;
+	char ifname[IFNAMSIZ];
 
 	(void)msglen;
 
+	if (if_indextoname(ifm->ifm_index, ifname) == NULL)
+		return;
+
+	/* Like ASK, take the name from the kernel each time; a different
+	 * name means the index was reused and the old entry is stale. */
 	itf = cmm_itf_find_by_index(ifm->ifm_index);
+	if (itf != NULL && strcmp(itf->ifname, ifname) != 0) {
+		itf_remove(g, itf);
+		itf = NULL;
+	}
+
 	if (itf == NULL) {
-		char ifname[IFNAMSIZ];
-
-		if (if_indextoname(ifm->ifm_index, ifname) == NULL)
-			return;
-
 		itf = itf_create(ifname, ifm->ifm_index);
 		if (itf == NULL)
 			return;

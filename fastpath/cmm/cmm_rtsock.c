@@ -162,6 +162,14 @@ cmm_rtsock_dispatch(struct cmm_global *g)
 	int n;
 
 	n = read(g->rtsock_fd, buf, sizeof(buf));
+
+	/* Interface announcements are shorter than a route message. */
+	if (n >= (int)sizeof(struct if_announcemsghdr) &&
+	    ((struct if_announcemsghdr *)buf)->ifan_type == RTM_IFANNOUNCE) {
+		cmm_itf_handle_ifannounce(g, buf, n);
+		return;
+	}
+
 	if (n < (int)sizeof(struct rt_msghdr))
 		return;
 

@@ -85,6 +85,7 @@ void cmm_itf_fini(void);
 
 /* Handle routing socket messages */
 void cmm_itf_handle_ifinfo(struct cmm_global *g, void *msg, int msglen);
+void cmm_itf_handle_ifannounce(struct cmm_global *g, void *msg, int msglen);
 void cmm_itf_handle_newaddr(struct cmm_global *g, void *msg, int msglen);
 void cmm_itf_handle_deladdr(struct cmm_global *g, void *msg, int msglen);
 
