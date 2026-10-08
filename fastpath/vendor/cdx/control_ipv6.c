@@ -211,8 +211,10 @@ int IPv6_handle_CONNTRACK(U16 *p, U16 Length)
 
 			pEntry_orig = IPv6_find_ctentry(Ctcmd.Saddr, Ctcmd.Daddr, Ctcmd.Sport, Ctcmd.Dport, Ctcmd.protocol);
 			pEntry_rep = IPv6_find_ctentry(Ctcmd.SaddrReply, Ctcmd.DaddrReply, Ctcmd.SportReply, Ctcmd.DportReply, Ctcmd.protocol);
+			/* ct_remove() must be given the originator half, as on IPv4. */
 			if (pEntry_orig == NULL || !IS_IPV6(pEntry_orig) || pEntry_rep == NULL || !IS_IPV6(pEntry_rep) ||
-					CT_TWIN(pEntry_orig) != pEntry_rep || CT_TWIN(pEntry_rep) != pEntry_orig)
+					CT_TWIN(pEntry_orig) != pEntry_rep || CT_TWIN(pEntry_rep) != pEntry_orig ||
+					((pEntry_orig->status & CONNTRACK_ORIG) != CONNTRACK_ORIG))
 				return ERR_CT_ENTRY_NOT_FOUND;
 
 			ct_remove(pEntry_orig);
@@ -222,6 +224,10 @@ int IPv6_handle_CONNTRACK(U16 *p, U16 Length)
 
 			pEntry_orig = IPv6_find_ctentry(Ctcmd.Saddr, Ctcmd.Daddr, Ctcmd.Sport, Ctcmd.Dport, Ctcmd.protocol);
 			pEntry_rep = IPv6_find_ctentry(Ctcmd.SaddrReply, Ctcmd.DaddrReply, Ctcmd.SportReply, Ctcmd.DportReply, Ctcmd.protocol);
+
+			if (pEntry_orig != NULL && pEntry_rep != NULL && ((pEntry_orig->status & CONNTRACK_ORIG) != CONNTRACK_ORIG))
+				return ERR_CREATION_FAILED; // Reverse entry already exists
+
 			if (pEntry_orig != NULL || pEntry_rep != NULL)
 				return ERR_CT_ENTRY_ALREADY_REGISTERED; //trying to add exactly the same conntrack
 
@@ -388,7 +394,8 @@ int IPv6_handle_CONNTRACK(U16 *p, U16 Length)
 			pEntry_rep = IPv6_find_ctentry(Ctcmd.SaddrReply, Ctcmd.DaddrReply, Ctcmd.SportReply, Ctcmd.DportReply, Ctcmd.protocol);
 			// Check for errors before changing anything
 			if (pEntry_orig == NULL || !IS_IPV6(pEntry_orig) || pEntry_rep == NULL || !IS_IPV6(pEntry_rep) ||
-					CT_TWIN(pEntry_orig) != pEntry_rep || CT_TWIN(pEntry_rep) != pEntry_orig)
+					CT_TWIN(pEntry_orig) != pEntry_rep || CT_TWIN(pEntry_rep) != pEntry_orig ||
+					((pEntry_orig->status & CONNTRACK_ORIG) != CONNTRACK_ORIG))
 				return ERR_CT_ENTRY_NOT_FOUND;
 
 #ifdef DPA_IPSEC_OFFLOAD 
