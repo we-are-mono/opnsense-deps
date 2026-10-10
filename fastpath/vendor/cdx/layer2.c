@@ -107,11 +107,24 @@ void remove_onif_by_index(U32 if_index)
 		PRouteEntry pRtentry;
 		struct slist_entry *entry;
 
-		// find and delete any routes that still use the interface (use counts should be zero)
+		// remove the routes that still use the interface, quarantine the ones that are still referenced
 		slist_for_each_safe(pRtentry, entry, &rt_cache[i], list)
 		{
-			if (pRtentry->itf->index == if_index)
-				L2_route_remove(pRtentry->id);
+			/* The interface is freed after we return, so no route
+			 * may keep a pointer to it (same as ASK 7432ef6). */
+			if (pRtentry->input_itf &&
+					pRtentry->input_itf->index == if_index)
+				pRtentry->input_itf = NULL;
+			if (pRtentry->underlying_input_itf &&
+					pRtentry->underlying_input_itf->index == if_index)
+				pRtentry->underlying_input_itf = NULL;
+
+			/* A referenced route can't be removed; clearing itf
+			 * makes L2_route_get() refuse it from now on. */
+			if (pRtentry->itf && pRtentry->itf->index == if_index) {
+				if (L2_route_remove(pRtentry->id) != NO_ERR)
+					pRtentry->itf = NULL;
+			}
 		}
 	}
 

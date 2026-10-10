@@ -83,6 +83,13 @@ cdxdrv_init_stats(void *muram_handle)
 	printf("cdx: cdxdrv_init_stats: mem=%p phys=0x%x size=%u\n",
 	    stats_mem, stats_mem_phys, size);
 
+	/* DEFINE_SPINLOCK only declares the lock on FreeBSD (unlike real
+	 * Linux, which statically initializes it) -- it still needs an
+	 * explicit spin_lock_init before first use. This is the only
+	 * caller of cdxdrv_init_stats, so init it here rather than adding
+	 * a separate module-init function just for one lock. */
+	spin_lock_init(&dpa_statslist_lock);
+
 	spin_lock(&dpa_statslist_lock);
 
 	/* Build PPPoE stats free-list */
@@ -128,7 +135,7 @@ int
 alloc_iface_stats(uint32_t dev_type, struct dpa_iface_info *iface)
 {
 
-	iface->last_stats = kzalloc(sizeof(struct iface_stats), 0);
+	iface->last_stats = kzalloc(sizeof(struct iface_stats), GFP_KERNEL);
 	if (iface->last_stats == NULL) {
 		DPA_ERROR("cdx: alloc_iface_stats: "
 		    "memory alloc failed for last_stats\n");

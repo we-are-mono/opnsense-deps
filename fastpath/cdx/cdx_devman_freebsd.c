@@ -305,8 +305,9 @@ dpa_add_vlan_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 
 	dpa_add_port_to_list(iface);
 
+	/* vlan_id arrives in network order */
 	DPA_INFO("cdx: devman: registered VLAN %s — itf_id=%u vlan=%u "
-	    "parent=%s\n", name, iface->itf_id, vlan_id,
+	    "parent=%s\n", name, iface->itf_id, ntohs(vlan_id),
 	    (char *)parent->name);
 
 	return (0);
@@ -322,7 +323,8 @@ dpa_add_vlan_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 
 int
 dpa_add_lagg_if(char *name, struct _itf *itf, struct _itf *phys_itf,
-    uint8_t *mac_addr, POnifDesc *member_onifs, int num_members)
+    uint8_t *mac_addr, POnifDesc *member_onifs, int num_members,
+    uint32_t lagg_proto)
 {
 	struct dpa_iface_info *iface, *parent, *mem;
 	int i;
@@ -344,6 +346,7 @@ dpa_add_lagg_if(char *name, struct _itf *itf, struct _itf *phys_itf,
 	iface->mtu = parent->mtu;
 
 	iface->lagg_info.parent = parent;
+	iface->lagg_info.lagg_proto = lagg_proto;
 	if (mac_addr)
 		memcpy(iface->lagg_info.mac_addr, mac_addr, 6);
 
@@ -412,6 +415,58 @@ dpa_get_lagg_member_ports(uint32_t itf_index, uint32_t *port_ids,
 			port_ids[*count] = eth_parent->eth_info.portid;
 			(*count)++;
 		}
+	}
+
+	spin_unlock(&dpa_devlist_lock);
+	return (0);
+}
+
+/* ================================================================
+ * dpa_get_broadcast_lagg_members — member port names for a
+ * `laggproto broadcast` LAGG in this route's egress hierarchy.
+ *
+ * Same ancestry walk as dpa_get_lagg_member_ports(), but only matches
+ * when the LAGG found is actually in broadcast mode, and returns
+ * member interface names (for get_onif_by_name()-based per-member TX
+ * resolution in cdx_ehash.c) rather than resolved port IDs. Used to
+ * build a per-flow REPLICATE_PKT chain: one classifier entry per LAGG
+ * member, each carrying the flow's own real L2/L3 info, since
+ * FreeBSD's own lagg_bcast_start() (if_lagg.c) clones one already-
+ * resolved frame unchanged to every member port rather than
+ * re-addressing it per port.
+ * ================================================================ */
+int
+dpa_get_broadcast_lagg_members(uint32_t itf_index,
+    char names[][IF_NAME_SIZE], int max, int *count)
+{
+	struct dpa_iface_info *iface;
+	int i;
+
+	spin_lock(&dpa_devlist_lock);
+
+	iface = devman_find_by_itfid(itf_index);
+	while (iface != NULL) {
+		if (iface->if_flags & IF_TYPE_LAGG)
+			break;
+		if (iface->if_flags & IF_TYPE_VLAN)
+			iface = iface->vlan_info.parent;
+		else
+			break;
+	}
+
+	if (iface == NULL || !(iface->if_flags & IF_TYPE_LAGG) ||
+	    iface->lagg_info.lagg_proto != CDX_LAGG_PROTO_BROADCAST ||
+	    iface->lagg_info.num_members < 2) {
+		spin_unlock(&dpa_devlist_lock);
+		return (-1);
+	}
+
+	*count = 0;
+	for (i = 0; i < iface->lagg_info.num_members && *count < max; i++) {
+		strlcpy(names[*count],
+		    (char *)iface->lagg_info.members[i]->name,
+		    IF_NAME_SIZE);
+		(*count)++;
 	}
 
 	spin_unlock(&dpa_devlist_lock);
@@ -710,6 +765,7 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
     PRouteEntry tnl_route, uint32_t *qosmark, uint32_t hash)
 {
 	struct dpa_iface_info *iface, *cur;
+	uint8_t *src_mac = NULL;
 	int depth;
 
 	if (rt_entry == NULL || rt_entry->itf == NULL)
@@ -760,7 +816,22 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 			}
 			cur = cur->vlan_info.parent;
 		} else if (cur->if_flags & IF_TYPE_LAGG) {
-			cur = cur->lagg_info.parent;
+			/* Send from the LAGG's MAC, which the far end
+			 * knows us by, not the member port's own. */
+			src_mac = cur->lagg_info.mac_addr;
+			/* lacp and loadbalance may send each flow out
+			 * any member cmm listed (for lacp, only the ones
+			 * DISTRIBUTING), and the far end accepts on any
+			 * of them, so spread flows by hash.  failover
+			 * must stay on the active port. */
+			if ((cur->lagg_info.lagg_proto == CDX_LAGG_PROTO_LACP ||
+			    cur->lagg_info.lagg_proto ==
+			    CDX_LAGG_PROTO_LOADBALANCE) &&
+			    cur->lagg_info.num_members > 1)
+				cur = cur->lagg_info.members[
+				    hash % cur->lagg_info.num_members];
+			else
+				cur = cur->lagg_info.parent;
 		} else if (cur->if_flags & IF_TYPE_PPPOE) {
 			l2_info->add_pppoe_hdr = 1;
 			l2_info->pppoe_sess_id = cur->pppoe_info.session_id;
@@ -792,9 +863,11 @@ dpa_get_tx_info_by_itf(PRouteEntry rt_entry,
 			/* Reached physical port — extract TX info */
 			struct eth_iface_info *eth = &cur->eth_info;
 
-			/* L2 header: dst MAC from route, src MAC from port */
+			/* L2 header: dst MAC from route, src MAC from
+			 * the LAGG if we came through one, else the port */
 			memcpy(l2_info->l2hdr, rt_entry->dstmac, 6);
-			memcpy(l2_info->l2hdr + 6, eth->mac_addr, 6);
+			memcpy(l2_info->l2hdr + 6,
+			    src_mac != NULL ? src_mac : eth->mac_addr, 6);
 
 			l2_info->mtu = cur->mtu;
 

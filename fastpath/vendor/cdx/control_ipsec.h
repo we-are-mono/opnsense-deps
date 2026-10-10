@@ -339,7 +339,8 @@ typedef struct _tSAID {
 /* flag to indicate in SA whether the shared descriptor already built or not */
 #define SA_SH_DESC_BUILT	0x80 
 #define SA_DELETE		0x100
-#define SA_FREE_HASH_ENTRY	0x200
+/* 0x200 retired (was SA_FREE_HASH_ENTRY, a deferred-free latch made dead
+ * by the ehash delete owning ct/handle disposition on every rc) */
 #define SA_FQ_WAIT_B4_FREE	0x400 /* reserve 3 bits starting from 0x400 */
 
 #define SA_HDR_COPY_TOS  1

@@ -242,6 +242,10 @@ drop:
  *
  * Called after fman_info is populated with port/distribution metadata
  * from the CDX_CTRL_DPA_SET_PARAMS ioctl.
+ *
+ * FQs are spread round-robin across the per-CPU portals, like Linux
+ * ASK's cdx_create_port_fqs(). Large ranges are split into one block
+ * per CPU instead of one FQR per FQ, to keep the FQR count low.
  */
 int
 cdx_create_port_fqs(void)
@@ -262,6 +266,7 @@ cdx_create_port_fqs(void)
 		struct cdx_port_info *pi = &fi->portinfo[i];
 		struct cdx_dist_info *di = pi->dist_info;
 		uint32_t portid = pi->portid;
+		uint32_t rr = 0;
 		if_t ifp;
 
 		if (di == NULL || pi->max_dist == 0)
@@ -278,8 +283,7 @@ cdx_create_port_fqs(void)
 		    cdx_dpa_bridge_find_ifnet(pi->name) : NULL;
 
 		for (j = 0; j < pi->max_dist; j++) {
-			uint32_t fqid;
-			uint32_t count;
+			uint32_t fqid, count, nblk, blk, k;
 			t_Handle fqr;
 
 			count = di[j].count;
@@ -289,41 +293,47 @@ cdx_create_port_fqs(void)
 			fqid = di[j].base_fqid +
 			    (portid << PORTID_SHIFT_VAL);
 
-			fqr = qman_fqr_create(count,
-			    (e_QmFQChannel)(e_QM_FQ_CHANNEL_SWPORTAL0 +
-			    (fqid % CDX_NUM_RX_CPUS)),
-			    1,				/* wq */
-			    true,			/* force_fqid */
-			    fqid,			/* specific FQID */
-			    false,			/* init_parked */
-			    false,			/* hold_active */
-			    true,			/* prefer_in_cache */
-			    false,			/* congst_avoid */
-			    NULL,			/* congst_group */
-			    0,				/* overhead_len */
-			    0);				/* tail_drop */
-			if (fqr == NULL) {
-				printf("cdx: create_port_fqs: FAILED "
-				    "FQID 0x%x count %u port '%s'\n",
-				    fqid, count, pi->name);
-				continue;	/* non-fatal */
+			/* One block per CPU when the range splits evenly. */
+			nblk = (count >= CDX_NUM_RX_CPUS &&
+			    count % CDX_NUM_RX_CPUS == 0) ? CDX_NUM_RX_CPUS : 1;
+			blk = count / nblk;
+
+			for (k = 0; k < nblk; k++, fqid += blk, rr++) {
+				fqr = qman_fqr_create(blk,
+				    (e_QmFQChannel)(e_QM_FQ_CHANNEL_SWPORTAL0 +
+				    (rr % CDX_NUM_RX_CPUS)),
+				    1,				/* wq */
+				    true,			/* force_fqid */
+				    fqid,			/* specific FQID */
+				    false,			/* init_parked */
+				    false,			/* hold_active */
+				    true,			/* prefer_in_cache */
+				    false,			/* congst_avoid */
+				    NULL,			/* congst_group */
+				    0,				/* overhead_len */
+				    0);				/* tail_drop */
+				if (fqr == NULL) {
+					printf("cdx: create_port_fqs: FAILED "
+					    "FQID 0x%x count %u port '%s'\n",
+					    fqid, blk, pi->name);
+					continue;	/* non-fatal */
+				}
+
+				if (nfqr >= CDX_MAX_DIST_FQRS) {
+					printf("cdx: create_port_fqs: "
+					    "CDX_MAX_DIST_FQRS (%d) exceeded, "
+					    "freeing FQID 0x%x\n",
+					    CDX_MAX_DIST_FQRS, fqid);
+					qman_fqr_free(fqr);
+					continue;
+				}
+
+				qman_fqr_register_cb(fqr,
+				    cdx_dist_fq_rx_callback, ifp);
+
+				cdx_dist_fqrs[nfqr] = fqr;
+				nfqr++;
 			}
-
-			if (nfqr >= CDX_MAX_DIST_FQRS) {
-				printf("cdx: create_port_fqs: "
-				    "CDX_MAX_DIST_FQRS (%d) exceeded, "
-				    "freeing FQID 0x%x\n",
-				    CDX_MAX_DIST_FQRS, fqid);
-				qman_fqr_free(fqr);
-				continue;
-			}
-
-			qman_fqr_register_cb(fqr,
-			    cdx_dist_fq_rx_callback, ifp);
-
-			cdx_dist_fqrs[nfqr] = fqr;
-			nfqr++;
-
 		}
 	}
 

@@ -339,3 +339,43 @@ cmm_neigh_invalidate(sa_family_t af, const void *ip)
 		}
 	}
 }
+
+/*
+ * Re-resolve every currently-resolved neighbor and report any whose
+ * MAC changed.  A gateway MAC change (CARP failover, hardware swap)
+ * never touches the routing table, so cmm_neigh_get()'s cache-hit
+ * fast path would otherwise keep returning the stale MAC forever.
+ * Callers still holding a reference to a changed entry are expected
+ * to invalidate whatever used the old MAC.
+ */
+void
+cmm_neigh_recheck_all(struct cmm_global *g,
+    void (*on_changed)(struct cmm_neigh *neigh, void *arg), void *arg)
+{
+	struct cmm_neigh *neigh;
+	struct list_head *pos;
+	uint8_t old_mac[ETHER_ADDR_LEN];
+	int i;
+
+	for (i = 0; i < NEIGH_HASH_TOTAL; i++) {
+		for (pos = list_first(&neigh_hash[i]); pos != &neigh_hash[i];
+		    pos = list_next(pos)) {
+			neigh = container_of(pos, struct cmm_neigh, entry);
+
+			if (neigh->state != NEIGH_RESOLVED)
+				continue;
+
+			memcpy(old_mac, neigh->macaddr, ETHER_ADDR_LEN);
+			if (neigh_resolve(g, neigh) != 0) {
+				/* Now unreachable — treat like a change so
+				 * callers stop trusting the old MAC. */
+				neigh->state = NEIGH_STALE;
+				on_changed(neigh, arg);
+				continue;
+			}
+			if (memcmp(old_mac, neigh->macaddr,
+			    ETHER_ADDR_LEN) != 0)
+				on_changed(neigh, arg);
+		}
+	}
+}

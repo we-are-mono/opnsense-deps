@@ -241,6 +241,7 @@ itf_detect_lagg(struct cmm_interface *itf, int sd)
 		return;		/* Not a LAGG interface */
 
 	itf->itf_flags |= ITF_F_LAGG;
+	itf->lagg_proto = ra.ra_proto;
 
 	if (ra.ra_ports < 1) {
 		cmm_print(CMM_LOG_INFO,
@@ -772,6 +773,26 @@ cmm_itf_foreach_vlan(struct cmm_global *g, cmm_itf_vlan_fn fn)
 		    pos = list_next(pos)) {
 			itf = container_of(pos, struct cmm_interface, entry);
 			if (itf->itf_flags & ITF_F_VLAN)
+				fn(g, itf);
+		}
+	}
+}
+
+void
+cmm_itf_foreach_vlan_of(struct cmm_global *g, int parent_ifindex,
+    cmm_itf_vlan_fn fn)
+{
+	struct list_head *bucket, *pos;
+	struct cmm_interface *itf;
+	int i;
+
+	for (i = 0; i < ITF_HASH_SIZE; i++) {
+		bucket = &itf_hash[i];
+		for (pos = list_first(bucket); pos != bucket;
+		    pos = list_next(pos)) {
+			itf = container_of(pos, struct cmm_interface, entry);
+			if ((itf->itf_flags & ITF_F_VLAN) &&
+			    itf->parent_ifindex == parent_ifindex)
 				fn(g, itf);
 		}
 	}
