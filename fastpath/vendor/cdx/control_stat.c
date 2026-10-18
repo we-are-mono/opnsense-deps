@@ -242,7 +242,7 @@ static U16 Get_Flow_stats(PStatFlowEntryResp flowStats, int do_reset)
 		pEntry = IPv4_find_ctentry(flowStats->Saddr, flowStats->Daddr, flowStats->Sport, flowStats->Dport, flowStats->Protocol);
 		if (!pEntry)
 		{
-			printk("No connection for flow: saddr=%pI4 daddr=%pI4 sport=%u dport=%u proto=%u\n",
+			DPRINT("No connection for flow: saddr=%pI4 daddr=%pI4 sport=%u dport=%u proto=%u\n",
 					&flowStats->Saddr, &flowStats->Daddr, htons(flowStats->Sport), htons(flowStats->Dport), flowStats->Protocol);
 			return ERR_FLOW_ENTRY_NOT_FOUND;
 		}
@@ -253,7 +253,7 @@ static U16 Get_Flow_stats(PStatFlowEntryResp flowStats, int do_reset)
 		pEntry = IPv6_find_ctentry(flowStats->Saddr_v6, flowStats->Daddr_v6, flowStats->Sport, flowStats->Dport, flowStats->Protocol);
 		if (!pEntry)
 		{
-			printk("No connection for flow: saddr=%pI6c daddr=%pI6c sport=%u dport=%u proto=%u\n",
+			DPRINT("No connection for flow: saddr=%pI6c daddr=%pI6c sport=%u dport=%u proto=%u\n",
 					flowStats->Saddr_v6, flowStats->Daddr_v6, htons(flowStats->Sport), htons(flowStats->Dport), flowStats->Protocol);
 			return ERR_FLOW_ENTRY_NOT_FOUND;
 		}
