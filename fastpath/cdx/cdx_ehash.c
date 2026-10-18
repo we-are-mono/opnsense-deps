@@ -94,6 +94,10 @@ static int create_strip_eth_hm(struct ins_entry_info *info);
 static int create_enque_hm(struct ins_entry_info *info);
 static int create_replicate_hm(struct ins_entry_info *info);
 static int fill_mcast_member_actions(RouteEntry *pRtEntry, struct ins_entry_info *info);
+static int cdx_build_lagg_broadcast_replicas(PCtEntry entry,
+    struct ins_entry_info *info, uint32_t tbl_type,
+    struct hw_ct_replica **out_replicas, void **out_chain_head);
+static void hw_ct_free_replicas(struct hw_ct *ct, int primary_delete_rc);
 static int fill_pppoe_relay_actions(struct ins_entry_info *info,pPPPoE_Info entry);
 static int create_tunnel_remove_hm(struct ins_entry_info *info);
 static int create_pppoe_ins_hm(struct ins_entry_info *info);
@@ -491,6 +495,220 @@ static int fill_key_info(PCtEntry entry, uint8_t *keymem, uint32_t port_id)
 	return key_size;
 }
 
+/* Pending-free quarantine for external-hash table entries (ISSUES.md
+ * A80, generalized to every classifier path by A95).
+ *
+ * A table entry leaves a live FMAN chain destructively and before any
+ * barrier - either inside ExternalHashTableDeleteKey() or, for
+ * multicast listeners, through the open-coded splice in
+ * dpa_control_mc.c. A host-command sync (ExternalHashTableFmPcdHcSync)
+ * is what proves that a ucode walker which entered the chain before the
+ * splice has left it; until one succeeds, the unlinked memory may still
+ * be dereferenced by hardware, so it must not go back to the allocator.
+ *
+ * A failed sync therefore leaves an entry that can neither be freed nor
+ * re-unlinked (the surgery is not idempotent - replaying it would walk
+ * pointers that have already been advanced). Park it here instead: the
+ * owning software state is cleared as usual, the memory stays allocated
+ * but unreachable, and the backlog is released the next time any sync
+ * on this PCD succeeds.
+ *
+ * One successful sync clears the whole backlog:
+ * ExternalHashTableFmPcdHcSync() syncs the table handle's PCD, and
+ * LS1046A runs a single FMAN PCD, so a success reached via any table or
+ * any flow is a valid barrier for every entry unlinked before it.
+ *
+ * Concurrency: the quarantine carries no lock of its own. Every touch
+ * runs either from an FCI command handler - serialized by ctrl.mutex in
+ * cdx_cmdhandler.c, with the multicast callers additionally holding
+ * mc_mutators_mutex - from the CT aging kthread, which takes that same
+ * ctrl.mutex, or from module exit with no handler in flight. The query
+ * walkers never see it, so no softirq-safe variant is needed. Callers
+ * must not hold a spinlock: the barriers reached from here busy-wait on
+ * host-command completion.
+ */
+atomic_t cdx_stat_hc_delete_unsynced;
+atomic_t cdx_stat_hc_delete_leaked;
+atomic_t cdx_stat_hc_delete_quarantined;
+
+struct cdx_ehash_pending_free {
+	struct list_head list;
+	void *tbl_entry;
+};
+
+static struct list_head cdx_ehash_pending_frees;
+static int cdx_ehash_pending_frees_initialized;
+static atomic_t cdx_ehash_pending_free_cnt;
+
+static inline void
+cdx_ehash_quarantine_init_once(void)
+{
+	if (!cdx_ehash_pending_frees_initialized) {
+		INIT_LIST_HEAD(&cdx_ehash_pending_frees);
+		cdx_ehash_pending_frees_initialized = 1;
+	}
+}
+
+/* Advisory snapshot for the debug proc readers, which run outside the
+ * mutator serialization. */
+unsigned int cdx_ehash_quarantine_pending(void)
+{
+	return atomic_read(&cdx_ehash_pending_free_cnt);
+}
+
+void cdx_ehash_quarantine_entry(void *tbl_entry)
+{
+	struct cdx_ehash_pending_free *node;
+
+	if (!tbl_entry)
+		return;
+
+	cdx_ehash_quarantine_init_once();
+
+	node = kzalloc(sizeof(*node), GFP_KERNEL);
+	if (!node)
+	{
+		/* No safe alternative: the entry is already out of the chain,
+		 * so it can neither be freed without a barrier nor reached
+		 * again through the owning software state. Leak it - the same
+		 * outcome the code had before the quarantine existed - and
+		 * make the leak visible in the log. */
+		DPA_ERROR("%s::quarantine alloc failed, leaking tbl_entry %p\n",
+				__FUNCTION__, tbl_entry);
+		return;
+	}
+	node->tbl_entry = tbl_entry;
+	list_add_tail(&node->list, &cdx_ehash_pending_frees);
+	atomic_inc(&cdx_ehash_pending_free_cnt);
+	atomic_inc(&cdx_stat_hc_delete_quarantined);
+}
+
+/* Release the whole backlog. Callers must have just observed a
+ * successful HC sync on this PCD, or be running at module exit where
+ * the PCD teardown has already quiesced the FMAN. Calling it without
+ * such a barrier reintroduces the use-after-free the quarantine exists
+ * to prevent. */
+void cdx_ehash_quarantine_free_all(void)
+{
+	struct cdx_ehash_pending_free *node, *tmp;
+
+	cdx_ehash_quarantine_init_once();
+
+	list_for_each_entry_safe(node, tmp, &cdx_ehash_pending_frees, list)
+	{
+		list_del(&node->list);
+		ExternalHashTableEntryFree(node->tbl_entry);
+		kfree(node);
+	}
+	atomic_set(&cdx_ehash_pending_free_cnt, 0);
+}
+
+/* Module-exit disposition of a backlog no drain could clear. cdx does
+ * NOT tear down the FMAN PCD on unload (sdk_fman owns it and stays
+ * loaded), so there is no barrier here either: by this point every
+ * teardown has already retried the sync and failed, meaning the HC
+ * channel is wedged and the ucode may still be walking the parked
+ * memory. Leaking a handful of entries at rmmod (test images only; cdx
+ * is never unloaded in production) is the only safe terminal state. */
+void cdx_ehash_quarantine_abandon(void)
+{
+	struct cdx_ehash_pending_free *node, *tmp;
+	int pending;
+
+	cdx_ehash_quarantine_init_once();
+
+	pending = atomic_read(&cdx_ehash_pending_free_cnt);
+	if (!pending)
+		return;
+
+	DPA_ERROR("%s::HC channel never recovered, leaking %u quarantined entries\n",
+			__FUNCTION__, pending);
+	/* Only the table entries have to be abandoned. The list nodes are
+	 * ordinary kmalloc'd bookkeeping with no hardware reference, so
+	 * release them rather than hand kmemleak a pile of reports that
+	 * hide a real one. */
+	list_for_each_entry_safe(node, tmp, &cdx_ehash_pending_frees, list)
+	{
+		list_del(&node->list);
+		kfree(node);
+	}
+	atomic_set(&cdx_ehash_pending_free_cnt, 0);
+}
+
+/* Retry the barrier for entries parked by an earlier failed sync. HC
+ * failures are frequently transient (frame-pool exhaustion rather than a
+ * wedged channel), so the reclaim attempt belongs on the next mutator
+ * that touches the same PCD. Paths that delete a key get the retry for
+ * free through cdx_ehash_delete_entry(); this entry point exists for the
+ * ones that only splice (multicast listener REMOVE/UPDATE), which
+ * otherwise issue no barrier at all. No-op when nothing is pending,
+ * which is the common case. */
+void cdx_ehash_quarantine_drain(void *td)
+{
+	cdx_ehash_quarantine_init_once();
+
+	if (list_empty(&cdx_ehash_pending_frees))
+		return;
+
+	if (ExternalHashTableFmPcdHcSync(td))
+	{
+		DPA_ERROR("%s::FmPcdHcSync failed, %u entries still quarantined\n",
+				__FUNCTION__, atomic_read(&cdx_ehash_pending_free_cnt));
+		return;
+	}
+	cdx_ehash_quarantine_free_all();
+}
+
+/* Delete one key from an external hash table and dispose of its table
+ * entry per the ExternalHashTableDeleteKey() tri-state (fm_ehash.h).
+ *
+ * This function owns `handle` from here on: no caller may free it on any
+ * path, and a caller that keeps freeing it reintroduces the A95 defect
+ * class (use-after-free on the not-unlinked arm, premature free on the
+ * unsynced arm). Callers stay responsible for their own software
+ * wrappers only. A NULL handle is tolerated so the "nothing was ever
+ * installed" case needs no guard at every site.
+ *
+ * Returns the raw rc, so callers can still distinguish gone (0) from
+ * unlinked-but-unproven (EN_EHASH_DELETE_UNSYNCED) from
+ * possibly-still-linked (FAILURE) - the last of which additionally means
+ * the key may still resolve in hardware, so re-inserting it would build
+ * a duplicate-key bucket. */
+int cdx_ehash_delete_entry(void *td, uint16_t index, void *handle)
+{
+	int rc;
+
+	if (!handle)
+		return SUCCESS;
+
+	rc = ExternalHashTableDeleteKey(td, index, handle);
+	if (rc == SUCCESS)
+	{
+		ExternalHashTableEntryFree(handle);
+		/* DeleteKey syncs the PCD before reporting success, and one
+		 * sync is a barrier for every entry unlinked before it, so
+		 * this same round-trip retires the whole backlog. */
+		cdx_ehash_quarantine_free_all();
+		return rc;
+	}
+	if (rc == EN_EHASH_DELETE_UNSYNCED)
+	{
+		/* Out of the chain, but no proof the ucode has left it. Park
+		 * it for the next successful sync on this PCD. */
+		atomic_inc(&cdx_stat_hc_delete_unsynced);
+		cdx_ehash_quarantine_entry(handle);
+		return rc;
+	}
+	/* Not provably unlinked, and there is no second unlink to retry: a
+	 * live chain may still resolve to this entry forever. Freeing it -
+	 * now, or later through the quarantine - is a use-after-free the
+	 * hardware commits, so the memory is abandoned deliberately. */
+	atomic_inc(&cdx_stat_hc_delete_leaked);
+	DPA_ERROR("%s::DeleteKey rc %d, leaking tbl_entry %p: not provably unlinked, freeing it would be a use-after-free\n",
+			__FUNCTION__, rc, handle);
+	return rc;
+}
+
 /* check activity */
 void hw_ct_get_active(struct hw_ct *ct)
 {
@@ -526,47 +744,68 @@ static void hw_ct_free_siblings(struct hw_ct *ct)
 	struct hw_ct_sibling *sib = ct->siblings;
 	while (sib) {
 		struct hw_ct_sibling *next = sib->next;
-		ExternalHashTableDeleteKey(sib->td, sib->index, sib->handle);
-		ExternalHashTableEntryFree(sib->handle);
+		(void)cdx_ehash_delete_entry(sib->td, sib->index, sib->handle);
 		kfree(sib);
 		sib = next;
 	}
 	ct->siblings = NULL;
 }
 
-/* delete classif entry from table */
+/* delete classif entry from table.
+ *
+ * Returns the ExternalHashTableDeleteKey() rc (fm_ehash.h): SUCCESS, or
+ * one of the two failure arms. The table entry's disposition belongs to
+ * cdx_ehash_delete_entry() on every arm; what this function owns is the
+ * hw_ct wrapper, which is pure software with no hardware reference and
+ * so is always released. Keeping ct alive past a failed delete bought
+ * nothing and is what let ct_remove() free an already-disposed handle
+ * (ISSUES.md A95). */
 int delete_entry_from_classif_table(PCtEntry entry)
 {
+	int rc;
+
 	if (!entry)
 	{
 		DPA_ERROR("%s:: Ct entry is NULL\n", __FUNCTION__);
 		return FAILURE;
 	}
+	/* ct == NULL is the normal state after ANY earlier delete attempt
+	 * (this function disposes of it on every rc), so a second call for
+	 * the same conntrack must be a successful no-op, not an oops. */
+	if (!entry->ct)
+		return SUCCESS;
 
 	CDX_DPA_DPRINT("\n");
 
-	/* Remove LAGG sibling entries first */
+	/* Remove LAGG sibling entries - independently key-matched, safe
+	 * to delete on their own regardless of the primary's fate. */
 	if (entry->ct->siblings)
 		hw_ct_free_siblings(entry->ct);
 
-	if (ExternalHashTableDeleteKey(entry->ct->td,
-			entry->ct->index, entry->ct->handle)) {
-                DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
-		return FAILURE;
-	}
-	//free table entry
-	ExternalHashTableEntryFree(entry->ct->handle);
-	entry->ct->handle =  NULL;
+	rc = cdx_ehash_delete_entry(entry->ct->td, entry->ct->index,
+			entry->ct->handle);
+	if (rc)
+		DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
+
+	/* REPLICATE_PKT replicas are chain-only state, never independently
+	 * key-matched - their disposition depends on whether the primary
+	 * above was provably unlinked, so this must run after it. */
+	if (entry->ct->replicas)
+		hw_ct_free_replicas(entry->ct, rc);
+
 	kfree(entry->ct);
 	entry->ct = NULL;
-	return SUCCESS;
+	return rc;
 }
 
 int delete_pppoe_relay_entry_from_classif_table(pPPPoE_Info entry)
 {
 	struct hw_ct *ct;
+	int rc;
 
 	ct = entry->hw_entry.ct;
+	if (!ct)
+		return SUCCESS;
 
 	CDX_DPA_DPRINT("\n");
 
@@ -574,23 +813,26 @@ int delete_pppoe_relay_entry_from_classif_table(pPPPoE_Info entry)
 	if (ct->siblings)
 		hw_ct_free_siblings(ct);
 
-	if(ExternalHashTableDeleteKey(ct->td,ct->index, ct->handle))
-	{
+	rc = cdx_ehash_delete_entry(ct->td, ct->index, ct->handle);
+	if (rc)
 		DPA_ERROR("%s::unable to remove entry from hash table\n", __FUNCTION__);
-		return FAILURE;
-	}
-	//free table entry
-	ExternalHashTableEntryFree(ct->handle);
-	ct->handle =  NULL;
+
 	kfree(ct);
-	ct = NULL;
-	return SUCCESS;
+	entry->hw_entry.ct = NULL;
+	return rc;
 }
 
-/* delete classif entry from table */
+/* delete classif entry from table.
+ *
+ * The handle's disposition is cdx_ehash_delete_entry()'s. The software
+ * flow is torn down on SUCCESS and on the unsynced arm (the key is out
+ * of the table on both); on a hard FAILURE the flow survives intact as
+ * a tombstone - see the comment at that arm. Returns the delete rc so
+ * the caller can distinguish the arms. */
 int delete_l2br_entry_classif_table(struct L2Flow_entry *entry)
 {
 	struct hw_ct *ct = entry->ct;
+	int rc = SUCCESS;
 
 	if (ct) {
 		/* Remove LAGG sibling entries first */
@@ -599,20 +841,43 @@ int delete_l2br_entry_classif_table(struct L2Flow_entry *entry)
 
 		if (ct->handle) {
 			if (ct->td) {
-				if (ExternalHashTableDeleteKey(ct->td, ct->index, ct->handle)) {
+				rc = cdx_ehash_delete_entry(ct->td, ct->index,
+						ct->handle);
+				if (rc) {
 					DPA_ERROR("%s::unable to remove entry from hash table\n",
 							__FUNCTION__);
-					return FAILURE;
 				}
+				/* Hard failure: the key was not provably
+				 * unlinked, so the software flow must survive
+				 * as a tombstone - it keeps ACTION_REGISTER of
+				 * the same tuple answering ALREADY_EXISTS
+				 * (re-adding a possibly-live key would build a
+				 * duplicate-key bucket), and a later
+				 * DEREGISTER retries this delete (the timer is
+				 * already off the wheel; cdx_timer_del is
+				 * idempotent). ct/handle stay allocated: the
+				 * ucode may still walk them, and the query
+				 * path keeps sampling them safely. */
+				if (rc == FAILURE)
+					return rc;
+			} else {
+				/* No table descriptor: the entry was never
+				 * linked into a chain, so the allocation is
+				 * ours to release outright. */
+				ExternalHashTableEntryFree(ct->handle);
 			}
-			/* free table entry */
-			ExternalHashTableEntryFree(ct->handle);
+			ct->handle = NULL;
 		}
 		kfree(ct);
+		entry->ct = NULL;
 	}
+	/* Unlinked from hardware (or unsynced and parked in the quarantine):
+	 * the software flow is torn down on this arm either way; a later
+	 * lookup can no longer resolve to a flow whose hardware entry is
+	 * gone or pending release. */
 	hlist_del(&entry->node);
 	kfree(entry);
-	return SUCCESS;
+	return rc;
 }
 
 static int get_table_type(PCtEntry entry, uint32_t *type)
@@ -923,7 +1188,7 @@ int insert_entry_in_classif_table(PCtEntry entry)
 	entry->ct = NULL;
 	tbl_entry = NULL;	
 
-	info = kzalloc(sizeof(struct ins_entry_info), 0);
+	info = kzalloc(sizeof(struct ins_entry_info), GFP_KERNEL);
 	if (!info)
 		return FAILURE;
 	info->entry = entry;
@@ -1082,8 +1347,40 @@ int insert_entry_in_classif_table(PCtEntry entry)
 	tbl_entry->hashentry.flags = cpu_to_be16(flags);
 	//param pointer and opcode pointer now valid
 	info->paramptr = ptr;
-	info->param_size = (MAX_EN_EHASH_ENTRY_SIZE - 
+	info->param_size = (MAX_EN_EHASH_ENTRY_SIZE -
 			GET_PARAM_OFFSET(flags));
+
+	/* laggproto broadcast: duplicate this flow out every LAGG member
+	 * port, not just the one dpa_get_tx_info_by_itf()'s hash picked
+	 * above for this (the primary) entry. Reuses the same
+	 * REPLICATE_PKT mechanism multicast uses (fill_actions()'s
+	 * num_mcast_members branch), but per-flow - see
+	 * cdx_build_lagg_broadcast_replicas()'s own comment for why a
+	 * shared/LAGG-owned chain can't work here. Failure just means
+	 * this flow offloads normally through its one hash-picked port,
+	 * same as any route CDX doesn't have special handling for.
+	 *
+	 * entry->ct->replicas is set immediately (not staged) since
+	 * entry->ct already exists at this point - if fill_actions() or
+	 * ExternalHashTableAddKey() below fails, err_ret's existing
+	 * "free entry->ct wholesale" handling needs a way to find these
+	 * too, added alongside it below. */
+	{
+		void *chain_head = NULL;
+
+		if (cdx_build_lagg_broadcast_replicas(entry, info, tbl_type,
+		    &entry->ct->replicas, &chain_head) == 0) {
+			uint64_t first_addr = XX_VirtToPhys(chain_head);
+
+			info->num_mcast_members = 1; /* just needs to be nonzero */
+			info->first_member_flow_addr_hi =
+			    cpu_to_be16((first_addr >> 32) & 0xffff);
+			info->first_member_flow_addr_lo =
+			    cpu_to_be32(first_addr & 0xffffffff);
+			info->first_listener_entry = chain_head;
+		}
+	}
+
 	if (fill_actions(entry, info)) {
 		DPA_ERROR("%s::unable to fill actions\n", __FUNCTION__);
 		goto err_ret;
@@ -1166,6 +1463,24 @@ int insert_entry_in_classif_table(PCtEntry entry)
 err_ret:
 	//release all allocated items
 	if (entry->ct) {
+		/* Replicas are built (cdx_build_lagg_broadcast_replicas())
+		 * before fill_actions() can still fail below it - unlike
+		 * siblings, which are only ever built after the last
+		 * reachable goto err_ret. Nothing has been added to a hash
+		 * table by key for these yet (create_exthash_entry4lagg_
+		 * replica() never calls ExternalHashTableAddKey()), so a
+		 * plain free is always correct here - there is no
+		 * unsynced-delete case to consider this early. */
+		if (entry->ct->replicas) {
+			struct hw_ct_replica *rep = entry->ct->replicas;
+
+			while (rep) {
+				struct hw_ct_replica *next = rep->next;
+				ExternalHashTableEntryFree(rep->handle);
+				kfree(rep);
+				rep = next;
+			}
+		}
 		kfree(entry->ct);
 		entry->ct = NULL;
 	}
@@ -1176,7 +1491,7 @@ err_ret1:
 	return FAILURE;
 }
 
-int insert_mcast_entry_in_classif_table(struct _tCtEntry *entry, 
+int insert_mcast_entry_in_classif_table(struct _tCtEntry *entry,
 					unsigned int num_members, uint64_t first_member_flow_addr,
 					void *first_listener_entry)
 {
@@ -1197,7 +1512,7 @@ int insert_mcast_entry_in_classif_table(struct _tCtEntry *entry,
 	entry->ct = NULL;
 	tbl_entry = NULL;	
 	
-	info = kzalloc(sizeof(struct ins_entry_info), 0);
+	info = kzalloc(sizeof(struct ins_entry_info), GFP_KERNEL);
 	if (!info)
 		return FAILURE;
 	
@@ -1476,7 +1791,7 @@ int insert_pppoe_relay_entry_in_classif_table(pPPPoE_Info entry)  /* struct _tPP
 	struct hw_ct *ct = NULL;
 	int retval;
 
-	info = kzalloc(sizeof(struct ins_entry_info), 0);
+	info = kzalloc(sizeof(struct ins_entry_info), GFP_KERNEL);
 	if(!info)
 	{
 		DPA_ERROR("%s::unable to allocate mem for info\n", __FUNCTION__);
@@ -1700,7 +2015,7 @@ int add_l2flow_to_hw(struct L2Flow_entry *entry)
 		return FAILURE;
 	}
 
-	info = kzalloc(sizeof(struct ins_entry_info), 0);
+	info = kzalloc(sizeof(struct ins_entry_info), GFP_KERNEL);
 	if (!info) {
 		DPA_ERROR("%s::unable to allocate mem for info\n",
 				__FUNCTION__);
@@ -3166,6 +3481,265 @@ err_ret:
 	return NULL;
 }
 
+/*
+ * create_exthash_entry4lagg_replica — one EHASH entry duplicating a
+ * flow's own primary entry onto one other member port of a
+ * `broadcast`-mode LAGG.
+ *
+ * Unlike a multicast listener (which has no single real destination
+ * and gets a synthesized group MAC) or a plain LAGG sibling (an
+ * independent, differently-keyed alternate match - see
+ * hw_ct_sibling), this reuses the SAME already-resolved l2_info/
+ * l3_info the primary entry itself was just built from - the flow's
+ * own real destination MAC, VLAN, tunnel headers - and only re-points
+ * the FQ/port. This is correct because FreeBSD's own
+ * lagg_bcast_start() (if_lagg.c) clones one already-fully-formed
+ * frame unchanged to every member port rather than re-addressing it
+ * per port; there is nothing member-specific to resolve.
+ */
+static struct en_exthash_tbl_entry *
+create_exthash_entry4lagg_replica(struct ins_entry_info *primary_info,
+    const char *member_name, struct en_exthash_tbl_entry *prev_tbl_entry,
+    uint32_t tbl_type)
+{
+	POnifDesc onif_desc;
+	int fm_idx, port_idx, port_id;
+	struct ins_entry_info info;
+	struct en_exthash_tbl_entry *tbl_entry = NULL;
+	uint64_t phyaddr;
+	uint16_t flags;
+	uint8_t *ptr;
+
+	onif_desc = get_onif_by_name((U8 *)member_name);
+	if (!onif_desc) {
+		DPA_ERROR("%s::unable to get onif for iface %s\n",
+		    __FUNCTION__, member_name);
+		goto err_ret;
+	}
+
+	if (dpa_get_fm_port_index(onif_desc->itf->index, 0, &fm_idx,
+	    &port_idx, &port_id)) {
+		DPA_ERROR("%s::unable to get fmindex for itfid %d\n",
+		    __FUNCTION__, onif_desc->itf->index);
+		goto err_ret;
+	}
+
+	/* Start from the primary's already-resolved header info (real
+	 * dst MAC, VLAN, tunnel, etc.) and only override what's actually
+	 * port-specific: fm/port/table lookup and the opcode/param
+	 * cursors, which point into this entry's own memory once
+	 * allocated below. */
+	info = *primary_info;
+	info.fm_idx = fm_idx;
+	info.port_idx = port_idx;
+	info.port_id = port_id;
+
+	info.fm_pcd = dpa_get_pcdhandle(fm_idx);
+	if (!info.fm_pcd) {
+		DPA_ERROR("%s::unable to get fm_pcd_handle for fmindex %d\n",
+		    __FUNCTION__, fm_idx);
+		goto err_ret;
+	}
+
+	info.td = dpa_get_tdinfo(fm_idx, port_id, tbl_type);
+	if (info.td == NULL) {
+		DPA_ERROR("%s::unable to get td for itfid %d, type %d\n",
+		    __FUNCTION__, onif_desc->itf->index, tbl_type);
+		goto err_ret;
+	}
+
+	tbl_entry = ExternalHashTableAllocEntry(info.td);
+	if (!tbl_entry) {
+		DPA_ERROR("%s::unable to alloc hash tbl memory\n",
+		    __FUNCTION__);
+		goto err_ret;
+	}
+
+	flags = 0;
+	ptr = (uint8_t *)&tbl_entry->hashentry.key[0];
+	info.opcptr = ptr;
+	ptr += MAX_OPCODES;
+
+	SET_OPC_OFFSET(flags, (uint32_t)(info.opcptr - (uint8_t *)tbl_entry));
+	SET_PARAM_OFFSET(flags, (uint32_t)(ptr - (uint8_t *)tbl_entry));
+	tbl_entry->hashentry.flags = cpu_to_be16(flags);
+	info.paramptr = ptr;
+	info.param_size = (MAX_EN_EHASH_ENTRY_SIZE - GET_PARAM_OFFSET(flags));
+	info.opc_count = 0;
+	info.num_mcast_members = 0;	/* this replica ends in a plain enqueue, no further chain */
+
+	/* Same header-manipulation opcode set the primary entry itself
+	 * would use for an ordinary (non-broadcast) flow - insert L2/
+	 * VLAN/tunnel headers as needed, terminate in enqueue. Reuses
+	 * fill_mcast_member_actions() because its body is fully generic
+	 * (nothing multicast-specific in it), not because this is
+	 * multicast. */
+	if (fill_mcast_member_actions(NULL, &info)) {
+		DPA_ERROR("%s::unable to fill actions\n", __FUNCTION__);
+		goto err_ret;
+	}
+
+	phyaddr = XX_VirtToPhys(tbl_entry);
+	if (prev_tbl_entry) {
+		prev_tbl_entry->next = tbl_entry;
+		tbl_entry->prev = prev_tbl_entry;
+		prev_tbl_entry->hashentry.next_entry_hi =
+		    cpu_to_be16((phyaddr >> 32) & 0xffff);
+		prev_tbl_entry->hashentry.next_entry_lo =
+		    cpu_to_be32((phyaddr & 0xffffffff));
+	}
+	return tbl_entry;
+err_ret:
+	if (tbl_entry)
+		ExternalHashTableEntryFree(tbl_entry);
+	return NULL;
+}
+
+/*
+ * cdx_build_lagg_broadcast_replicas — add a REPLICATE_PKT chain to
+ * one flow's own classifier entry so it duplicates out every member
+ * port of a `broadcast`-mode LAGG, not just the one
+ * dpa_get_tx_info_by_itf()'s hash picked for the primary entry.
+ *
+ * Called from insert_entry_in_classif_table(), after the primary
+ * entry's own l2_info/l3_info/actions are already filled in but
+ * before its opcode list is considered final - REPLICATE_PKT must be
+ * the primary's own opcode too (see fill_actions()'s num_mcast_members
+ * branch), so this both builds the replicas AND arranges for the
+ * caller to add REPLICATE_PKT to the primary.
+ *
+ * Per-flow, not shared: every replica is a copy of THIS flow's own
+ * resolved header info, owned by this flow's hw_ct (ct->replicas),
+ * and torn down with it. Returns 0 on success (info->num_mcast_members/
+ * replicate_params now set, ready for fill_actions() to add
+ * REPLICATE_PKT to the primary), -1 if this route isn't a broadcast
+ * LAGG or replicas couldn't be built (caller proceeds as an ordinary
+ * non-replicated flow - see insert_entry_in_classif_table()).
+ */
+static int
+cdx_build_lagg_broadcast_replicas(PCtEntry entry,
+    struct ins_entry_info *info, uint32_t tbl_type,
+    struct hw_ct_replica **out_replicas, void **out_chain_head)
+{
+	char member_names[LAGG_MAX_MEMBERS][IF_NAME_SIZE];
+	struct en_exthash_tbl_entry *tbl_entry, *prev_tbl_entry, *chain_head;
+	struct hw_ct_replica *replicas, *rep;
+	int n_members, i, primary_port_id;
+
+	if (dpa_get_broadcast_lagg_members(entry->pRtEntry->itf->index,
+	    member_names, LAGG_MAX_MEMBERS, &n_members))
+		return (-1);
+
+	/* info->port_id is whichever member dpa_get_tx_info_by_itf()'s
+	 * hash already picked for the primary entry - skip building a
+	 * redundant replica for that same port. */
+	primary_port_id = info->port_id;
+	replicas = NULL;
+	prev_tbl_entry = NULL;
+	chain_head = NULL;
+
+	for (i = 0; i < n_members; i++) {
+		uint32_t fm_idx, port_idx, port_id;
+		POnifDesc onif_desc;
+
+		onif_desc = get_onif_by_name((U8 *)member_names[i]);
+		if (onif_desc == NULL)
+			continue;
+		if (dpa_get_fm_port_index(onif_desc->itf->index, 0,
+		    (int *)&fm_idx, (int *)&port_idx, (int *)&port_id))
+			continue;
+		if ((int)port_id == primary_port_id)
+			continue;
+
+		/* Chain each replica off the previous one in sequence
+		 * (create_exthash_entry4lagg_replica() patches
+		 * prev_tbl_entry->next/hashentry.next_entry_hi/lo), the
+		 * same forward-build order cdx_create_mcast_group() uses -
+		 * passing NULL here every time would leave every replica
+		 * but the first an unreferenced MURAM island that FMan
+		 * never actually walks to. */
+		tbl_entry = create_exthash_entry4lagg_replica(info,
+		    member_names[i], prev_tbl_entry, tbl_type);
+		if (tbl_entry == NULL) {
+			DPA_ERROR("%s: replica build failed for %s\n",
+			    __FUNCTION__, member_names[i]);
+			goto err_ret;
+		}
+
+		rep = kzalloc(sizeof(*rep), GFP_KERNEL);
+		if (rep == NULL) {
+			ExternalHashTableEntryFree(tbl_entry);
+			goto err_ret;
+		}
+		rep->handle = tbl_entry;
+		rep->next = replicas;
+		replicas = rep;
+		if (chain_head == NULL)
+			chain_head = tbl_entry; /* first one built = true chain head */
+		prev_tbl_entry = tbl_entry;
+	}
+
+	if (replicas == NULL) {
+		/* Only one member port actually resolved (e.g. mid-flap) -
+		 * nothing to replicate to right now. Not an error: the
+		 * flow still offloads normally through the primary/hash-
+		 * picked port, and the next membership-change re-probe
+		 * (cmm_lagg_failover()) will invalidate and let it
+		 * reoffload with the full member set once available. */
+		return (-1);
+	}
+
+	*out_replicas = replicas;
+	*out_chain_head = chain_head;
+	return (0);
+
+err_ret:
+	for (rep = replicas; rep != NULL; ) {
+		struct hw_ct_replica *next = rep->next;
+		ExternalHashTableEntryFree(rep->handle);
+		kfree(rep);
+		rep = next;
+	}
+	return (-1);
+}
+
+/*
+ * hw_ct_free_replicas — teardown for the per-flow REPLICATE_PKT chain
+ * built by cdx_build_lagg_broadcast_replicas().
+ *
+ * Unlike hw_ct_sibling entries (independently key-matched, each
+ * deletable on its own via cdx_ehash_delete_entry()), a replica is
+ * never added to a hash table by key - it's pure MURAM state reached
+ * only by the primary entry's REPLICATE_PKT chain walk, exactly like
+ * a multicast listener entry. So its fate rides on the PRIMARY
+ * entry's own delete outcome, mirroring cdx_free_exthash_mcast_
+ * members() (primary delete proven synced -> free outright) vs.
+ * mc_quarantine_members() (primary delete unsynced -> park; ucode may
+ * still walk the chain to it). Must be called after the primary's
+ * ExternalHashTableDeleteKey() result is known, never before.
+ */
+static void
+hw_ct_free_replicas(struct hw_ct *ct, int primary_delete_rc)
+{
+	struct hw_ct_replica *rep = ct->replicas;
+
+	while (rep) {
+		struct hw_ct_replica *next = rep->next;
+
+		if (primary_delete_rc == SUCCESS)
+			ExternalHashTableEntryFree(rep->handle);
+		else if (primary_delete_rc == EN_EHASH_DELETE_UNSYNCED)
+			cdx_ehash_quarantine_entry(rep->handle);
+		else
+			DPA_ERROR("%s::leaking replica %p: primary delete "
+			    "rc %d not provably unlinked\n", __FUNCTION__,
+			    rep->handle, primary_delete_rc);
+		kfree(rep);
+		rep = next;
+	}
+	ct->replicas = NULL;
+}
+
 static int fill_mcast_member_actions(RouteEntry *pRtEntry, struct ins_entry_info *info)
 {
 	uint32_t ii; 
@@ -3905,7 +4479,7 @@ int cdx_create_rtp_qos_slowpath_flow(PSockEntry pSocket)
 
 	tbl_entry = NULL;	
 
-	info = kzalloc(sizeof(struct ins_entry_info), 0);
+	info = kzalloc(sizeof(struct ins_entry_info), GFP_KERNEL);
 	if (!info)
 	{
 		DPA_ERROR("%s(%d)::unable to create memory.\n",__FUNCTION__, __LINE__);
@@ -4058,7 +4632,7 @@ int cdx_create_rtp_conn_in_classif_table (PRTPflow pFlow, PSockEntry pFromSocket
 		return FAILURE;
 	}
 
-	info = kzalloc(sizeof(struct ins_entry_info), 0);
+	info = kzalloc(sizeof(struct ins_entry_info), GFP_KERNEL);
 	if (!info)
 		return FAILURE;
 

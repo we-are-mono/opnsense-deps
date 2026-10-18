@@ -56,6 +56,42 @@ sysctl_cdx_active_conn(SYSCTL_HANDLER_ARGS)
 	return (sysctl_handle_long(oidp, &val, 0, req));
 }
 
+static int
+sysctl_cdx_hc_delete_unsynced(SYSCTL_HANDLER_ARGS)
+{
+	unsigned long val;
+
+	val = (unsigned long)atomic_read(&cdx_stat_hc_delete_unsynced);
+	return (sysctl_handle_long(oidp, &val, 0, req));
+}
+
+static int
+sysctl_cdx_hc_delete_leaked(SYSCTL_HANDLER_ARGS)
+{
+	unsigned long val;
+
+	val = (unsigned long)atomic_read(&cdx_stat_hc_delete_leaked);
+	return (sysctl_handle_long(oidp, &val, 0, req));
+}
+
+static int
+sysctl_cdx_hc_delete_quarantined(SYSCTL_HANDLER_ARGS)
+{
+	unsigned long val;
+
+	val = (unsigned long)atomic_read(&cdx_stat_hc_delete_quarantined);
+	return (sysctl_handle_long(oidp, &val, 0, req));
+}
+
+static int
+sysctl_cdx_hc_delete_quarantine_pending(SYSCTL_HANDLER_ARGS)
+{
+	unsigned long val;
+
+	val = (unsigned long)cdx_ehash_quarantine_pending();
+	return (sysctl_handle_long(oidp, &val, 0, req));
+}
+
 void
 cdx_sysctl_init(void)
 {
@@ -93,6 +129,33 @@ cdx_sysctl_init(void)
 	    SYSCTL_CHILDREN(stats_node), OID_AUTO, "timer_ticks",
 	    CTLFLAG_RD, &cdx_stat_timer_ticks,
 	    "Timer wheel ticks");
+
+	SYSCTL_ADD_PROC(&cdx_sysctl_ctx,
+	    SYSCTL_CHILDREN(stats_node), OID_AUTO, "hc_delete_unsynced",
+	    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    NULL, 0, sysctl_cdx_hc_delete_unsynced, "LU",
+	    "ExternalHashTableDeleteKey() calls returning EN_EHASH_DELETE_UNSYNCED "
+	    "(unlinked, HC sync unconfirmed -- transient, resolved by quarantine)");
+
+	SYSCTL_ADD_PROC(&cdx_sysctl_ctx,
+	    SYSCTL_CHILDREN(stats_node), OID_AUTO, "hc_delete_leaked",
+	    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    NULL, 0, sysctl_cdx_hc_delete_leaked, "LU",
+	    "ExternalHashTableDeleteKey() calls returning hard FAILURE -- entry "
+	    "never provably unlinked, permanently abandoned");
+
+	SYSCTL_ADD_PROC(&cdx_sysctl_ctx,
+	    SYSCTL_CHILDREN(stats_node), OID_AUTO, "hc_delete_quarantined",
+	    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    NULL, 0, sysctl_cdx_hc_delete_quarantined, "LU",
+	    "Entries ever parked in the delete quarantine");
+
+	SYSCTL_ADD_PROC(&cdx_sysctl_ctx,
+	    SYSCTL_CHILDREN(stats_node), OID_AUTO,
+	    "hc_delete_quarantine_pending",
+	    CTLTYPE_ULONG | CTLFLAG_RD | CTLFLAG_MPSAFE,
+	    NULL, 0, sysctl_cdx_hc_delete_quarantine_pending, "LU",
+	    "Current delete-quarantine backlog size");
 }
 
 void

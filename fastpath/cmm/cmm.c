@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include "cmm.h"
@@ -128,6 +129,10 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+
+	/* Once daemonized, stderr has no reader - route through syslog
+	 * so deny-rule/offload/FCI logging stays visible after that. */
+	openlog("cmm", LOG_PID | LOG_NDELAY, LOG_DAEMON);
 
 	cmm_print(CMM_LOG_INFO, "CMM starting (debug=%d)", g->debug_level);
 
@@ -326,6 +331,7 @@ main(int argc, char *argv[])
 		}
 		g->pfnotify_fd = fd;
 		cmm_print(CMM_LOG_INFO, "pfnotify: fd=%d", fd);
+		cmm_conn_pin_init(g);
 	}
 
 	/* Register FCI event dispatcher for CDX async notifications */
@@ -447,6 +453,8 @@ main(int argc, char *argv[])
 					cmm_conn_stats_sync(g);
 				else if (events[i].ident == 6)
 					cmm_conn_maintenance(g);
+				else if (events[i].ident == 7)
+					cmm_lagg_settle_tick(g);
 			} else if (events[i].udata ==
 			    (void *)(uintptr_t)1) {
 				/* Control socket: new connection */
@@ -519,6 +527,7 @@ out:
 
 	pidfile_remove(pfh);
 	cmm_print(CMM_LOG_INFO, "exited");
+	closelog();
 
 	return (0);
 }

@@ -145,8 +145,8 @@ void* M_ipsec_get_matched_natt_tunnel(PSAEntry sa)
 			if (!IS_NATT_SA(sa))
 				continue;
 			/* This SA is under release process */
-			if (pEntry->flags & SA_FREE_HASH_ENTRY)
-				continue; 
+			if (pEntry->flags & SA_DELETE)
+				continue;
 #ifdef CONTROL_IPSEC_DEBUG
 			printk("%x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x - %x:%x\n", \
 				pEntry->natt.sport,  sa->natt.sport, pEntry->natt.dport,  \

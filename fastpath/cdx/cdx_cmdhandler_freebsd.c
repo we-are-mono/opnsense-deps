@@ -24,6 +24,8 @@
 /* FCI registration API (from fci_freebsd.h) */
 extern void fci_register_send_command(
     int (*fn)(uint16_t, uint16_t, uint16_t *, uint16_t *, uint16_t *));
+extern void fci_register_event_cb(
+    int (**cb_ptr)(uint16_t, uint16_t, uint16_t *));
 
 /* Forward declarations for exported functions */
 static int cdx_send_command(uint16_t fcode, uint16_t length,
@@ -197,6 +199,10 @@ cdx_cmdhandler_init(void)
 	/* Register CDX command handler with FCI module */
 	fci_register_send_command(cdx_send_command);
 
+	/* Let CDX events (flow aged out, etc.) reach userspace through FCI,
+	 * like ASK's comcerto_fpp_register_event_cb() hookup. */
+	fci_register_event_cb(&cdx_info->ctrl.event_cb);
+
 exit:
 	return (rc);
 }
@@ -204,6 +210,9 @@ exit:
 void
 cdx_cmdhandler_exit(void)
 {
+	/* Called with ctrl->mutex held, same as every msg_send() caller. */
+	cdx_info->ctrl.event_cb = NULL;
+
 	CMD_EXIT(pktcap);
 	CMD_EXIT(rtp_relay);
 	CMD_EXIT(mc6);

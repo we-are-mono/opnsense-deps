@@ -21,6 +21,12 @@
 #define PFN_DEV_PATH	"/dev/pfnotify"
 #define PFN_DEV_NAME	"pfnotify"
 
+/* pfn_event.flags */
+#define PFN_EVF_NO_OFFLOAD	0x0001	/* PF must see every packet: TCP
+					 * sequence rewriting (modulate
+					 * state, synproxy) or a dummynet
+					 * pipe, which CDX can't do */
+
 /* Event types (kernel -> userspace via read()) */
 #define PFN_EVENT_INSERT	1	/* new PF state created */
 #define PFN_EVENT_READY		2	/* state is offload-ready */
@@ -59,10 +65,14 @@ struct pfn_event {
 	uint64_t		id;		/* pf_kstate.id */
 	uint32_t		creatorid;	/* pf_kstate.creatorid */
 	uint16_t		state_flags;	/* pf_kstate.state_flags */
-	uint16_t		_pad1;
+	uint16_t		flags;		/* PFN_EVF_* (was padding) */
 	char			ifname[16];	/* IFNAMSIZ */
 	struct pfn_state_key	key[2];		/* [0]=wire, [1]=stack */
-	uint8_t			_pad2[8];	/* pad to 128 bytes */
+	uint32_t		rt_ifindex;	/* route-to/reply-to egress
+						 * ifindex, 0 if pf didn't
+						 * override the route for
+						 * this state */
+	uint8_t			_pad2[4];	/* pad to 128 bytes */
 };
 
 #ifdef _KERNEL
@@ -80,18 +90,51 @@ struct pfn_counter_entry {
 	uint32_t	pad;
 	uint64_t	packets[2];	/* delta [0]=forward, [1]=reply */
 	uint64_t	bytes[2];	/* delta [0]=forward, [1]=reply */
+	uint8_t		missing;	/* out: 1 if PF had no matching state */
+	uint8_t		pad2[7];
 };
 
 struct pfn_counter_update {
 	uint32_t	count;		/* number of entries */
 	uint32_t	pad;
-	const struct pfn_counter_entry *entries;	/* userspace pointer */
+	struct pfn_counter_entry *entries;	/* userspace pointer, in/out */
 };
 
 #ifdef _KERNEL
 #include <sys/ioccom.h>
 #endif
 
-#define PFN_IOC_UPDATE_COUNTERS	_IOW('N', 1, struct pfn_counter_update)
+#define PFN_IOC_UPDATE_COUNTERS	_IOWR('N', 1, struct pfn_counter_update)
+
+/* --- Offload pin (userspace -> kernel via ioctl) --- */
+
+/*
+ * A pinned PF state never times out while the hardware carries its flow;
+ * CMM unpins it when CDX reports the flow idle or drops it.  Unpinning
+ * restarts PF's normal timeout from now.
+ */
+#define PFN_PIN_BATCH_MAX	256
+
+#define PFN_PIN_OK		0	/* done */
+#define PFN_PIN_MISSING		1	/* PF had no matching state */
+#define PFN_PIN_CLOSING		2	/* TCP already closing, not pinned */
+#define PFN_PIN_OWN_TIMEOUT	3	/* rule sets its own timeout, not
+					 * pinned (CDX only has global ones) */
+
+struct pfn_pin_entry {
+	uint64_t	id;		/* PF state ID */
+	uint32_t	creatorid;	/* PF state creator ID */
+	uint8_t		pin;		/* 1 = pin, 0 = unpin */
+	uint8_t		result;		/* out: PFN_PIN_* */
+	uint8_t		pad[2];
+};
+
+struct pfn_pin_update {
+	uint32_t	count;		/* number of entries, 0 = support probe */
+	uint32_t	pad;
+	struct pfn_pin_entry *entries;	/* userspace pointer, in/out */
+};
+
+#define PFN_IOC_SET_PIN		_IOWR('N', 2, struct pfn_pin_update)
 
 #endif /* PF_NOTIFY_H */

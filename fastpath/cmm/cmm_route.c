@@ -33,29 +33,42 @@
 static struct list_head route_hash[ROUTE_HASH_TOTAL];
 
 static inline unsigned int
-route_hash_index(sa_family_t af, const void *dst)
+route_hash_index(sa_family_t af, const void *dst, int oif_hint, int iif)
 {
+	uint32_t seed = (uint32_t)oif_hint ^ ((uint32_t)iif << 16);
+
 	if (af == AF_INET)
-		return (jhash(dst, 4, 0) % ROUTE_HASH_SIZE);
+		return (jhash(dst, 4, seed) % ROUTE_HASH_SIZE);
 	else
-		return (jhash(dst, 16, 0) % ROUTE_HASH_SIZE) + ROUTE_HASH_SIZE;
+		return (jhash(dst, 16, seed) % ROUTE_HASH_SIZE)
+		    + ROUTE_HASH_SIZE;
 }
 
+/*
+ * Find a cached route by (family, dst, oif_hint, iif).  oif_hint is part
+ * of the key so a route-to'd connection never collides with a plain
+ * default-routed one to the same destination - they need genuinely
+ * different routes, not just different metadata on a shared one.
+ * iif is part of it for the same reason: CDX installs a route's flows
+ * on its input port, so flows arriving on different interfaces need
+ * their own route (ASK keys routes on iifindex too).
+ */
 static struct cmm_route *
-route_find(sa_family_t af, const void *dst)
+route_find(sa_family_t af, const void *dst, int oif_hint, int iif)
 {
 	struct list_head *bucket, *pos;
 	struct cmm_route *rt;
 	unsigned int h;
 	int alen;
 
-	h = route_hash_index(af, dst);
+	h = route_hash_index(af, dst, oif_hint, iif);
 	bucket = &route_hash[h];
 	alen = (af == AF_INET) ? 4 : 16;
 
 	for (pos = list_first(bucket); pos != bucket; pos = list_next(pos)) {
 		rt = container_of(pos, struct cmm_route, entry);
-		if (rt->family == af && memcmp(rt->dst, dst, alen) == 0)
+		if (rt->family == af && rt->oif_hint == oif_hint &&
+		    rt->iif_index == iif && memcmp(rt->dst, dst, alen) == 0)
 			return (rt);
 	}
 	return (NULL);
@@ -110,6 +123,16 @@ route_resolve(struct cmm_global *g, struct cmm_route *rt)
 		rt->oif_index = addrs.ifp->sdl_index;
 	} else {
 		rt->oif_index = rtm->rtm_index;
+	}
+
+	/* pf route-to/reply-to sent this connection out a specific
+	 * interface - honor that instead of the default FIB's answer,
+	 * which knows nothing about pf's per-connection routing rules. */
+	if (rt->oif_hint != 0) {
+		cmm_print(CMM_LOG_DEBUG,
+		    "route: resolve fib_oif=%d overridden to oif_hint=%d",
+		    rt->oif_index, rt->oif_hint);
+		rt->oif_index = rt->oif_hint;
 	}
 
 	/* Get gateway */
@@ -223,13 +246,14 @@ cmm_route_alloc_id(struct cmm_global *g)
 }
 
 struct cmm_route *
-cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst)
+cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst,
+    int oif_hint, int iif)
 {
 	struct cmm_route *rt;
 	unsigned int h;
 	int alen;
 
-	rt = route_find(af, dst);
+	rt = route_find(af, dst, oif_hint, iif);
 	if (rt != NULL) {
 		rt->refcount++;
 		return (rt);
@@ -243,6 +267,8 @@ cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst)
 
 	rt->family = af;
 	memcpy(rt->dst, dst, alen);
+	rt->oif_hint = oif_hint;
+	rt->iif_index = iif;
 	rt->fpp_id = cmm_route_alloc_id(g);
 	if (rt->fpp_id == 0) {
 		cmm_print(CMM_LOG_ERR, "route: route ID space exhausted");
@@ -252,7 +278,7 @@ cmm_route_get(struct cmm_global *g, sa_family_t af, const void *dst)
 	rt->entry.next = NULL;
 	rt->entry.prev = NULL;
 
-	h = route_hash_index(af, dst);
+	h = route_hash_index(af, dst, oif_hint, iif);
 	list_add(&route_hash[h], &rt->entry);
 
 	if (route_resolve(g, rt) < 0) {
@@ -376,6 +402,13 @@ cmm_route_handle_change(struct cmm_global *g, struct rt_msghdr *rtm,
 	/* Re-evaluate tunnel and socket registrations after route changes */
 	cmm_tunnel_route_update(g);
 	cmm_socket_route_update(g);
+
+	/* Let this route event retry anything CDX rejected earlier for
+	 * lack of a registered interface (issue #11's boot race: cmm
+	 * starting before WAN finishes its post-DHCP reconfiguration) -
+	 * the interface simply exists by now, whatever event this is.
+	 * Otherwise recovery waits on the next CMM_MAINT_MS tick. */
+	(void)cmm_conn_retry_rejected(g);
 }
 
 /*
@@ -409,6 +442,57 @@ cmm_route_invalidate_by_oif(struct cmm_global *g, int oif_index)
 		cmm_print(CMM_LOG_INFO,
 		    "route: invalidated %d route(s) on ifindex %d",
 		    count, oif_index);
+}
+
+/*
+ * Invalidate all cached routes pointing at a neighbor whose MAC just
+ * changed (CARP failover, gateway hardware swap).  The route itself
+ * is still valid - only the stale link-layer rewrite CDX programmed
+ * needs tearing down so the connections re-offload with the new MAC.
+ */
+void
+cmm_route_invalidate_by_neigh(struct cmm_global *g, struct cmm_neigh *neigh)
+{
+	struct cmm_route *rt;
+	struct list_head *pos;
+	int i, count = 0;
+
+	for (i = 0; i < ROUTE_HASH_TOTAL; i++) {
+		for (pos = list_first(&route_hash[i]);
+		    pos != &route_hash[i]; pos = list_next(pos)) {
+			rt = container_of(pos, struct cmm_route, entry);
+
+			if (rt->neigh != neigh)
+				continue;
+
+			cmm_route_invalidate_conns(g, rt);
+			cmm_fe_route_deregister(g, rt);
+			count++;
+		}
+	}
+
+	if (count > 0)
+		cmm_print(CMM_LOG_INFO,
+		    "route: invalidated %d route(s), neighbor MAC changed",
+		    count);
+}
+
+/* cmm_neigh_recheck_all() callback: fires per neighbor whose MAC changed */
+static void
+route_on_neigh_changed(struct cmm_neigh *neigh, void *arg)
+{
+	cmm_route_invalidate_by_neigh((struct cmm_global *)arg, neigh);
+}
+
+/*
+ * Periodic check for gateway MAC changes.  Unlike a route change, a
+ * MAC change (CARP failover, hardware swap) never touches the routing
+ * table, so there's no event to catch it - this has to poll.
+ */
+void
+cmm_route_check_neigh_changes(struct cmm_global *g)
+{
+	cmm_neigh_recheck_all(g, route_on_neigh_changed, g);
 }
 
 /*

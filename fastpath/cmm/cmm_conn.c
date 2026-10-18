@@ -17,12 +17,15 @@
 #include <sys/types.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/sysctl.h>
 #include <net/pfvar.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "cmm.h"
@@ -30,6 +33,7 @@
 #include "cmm_route.h"
 #include "cmm_neigh.h"
 #include "cmm_itf.h"
+#include "cmm_lagg.h"
 #include "cmm_fe.h"
 #include "cmm_bridge.h"
 #include "cmm_deny.h"
@@ -96,27 +100,198 @@ conn_find_5tuple(sa_family_t af, uint8_t proto,
 		conn = container_of(pos, struct cmm_conn, hash_entry);
 		if (conn->af == af &&
 		    conn->proto == proto &&
-		    conn->orig_sport == sport &&
-		    conn->orig_dport == dport &&
-		    memcmp(conn->orig_saddr, saddr, alen) == 0 &&
-		    memcmp(conn->orig_daddr, daddr, alen) == 0)
+		    conn->key_sport == sport &&
+		    conn->key_dport == dport &&
+		    memcmp(conn->key_saddr, saddr, alen) == 0 &&
+		    memcmp(conn->key_daddr, daddr, alen) == 0)
 			return (conn);
 	}
 	return (NULL);
 }
 
+/* --- Offload pin (pf_notify) ---------------------------------------- */
+
+/*
+ * Like ASK's IPS_PERMANENT: while a flow is in CDX its PF states are
+ * pinned so PF never times them out, and CDX's own aging decides when
+ * the flow is idle.  Without kernel support, stats sync keeps the
+ * states alive instead.
+ */
+static int pin_supported;
+
+static int shaper_reload(void);
+static time_t conn_now(void);
+
+/* Last pf timeouts given to CDX, so they're only resent on change. */
+static int cdx_tcp_timeout, cdx_udp_timeout, cdx_udp_single_timeout;
+
+static int
+pf_timeout(int fd, int which)
+{
+	struct pfioc_tm tm;
+
+	memset(&tm, 0, sizeof(tm));
+	tm.timeout = which;
+	if (ioctl(fd, DIOCGETTIMEOUT, &tm) < 0)
+		return (-1);
+	return (tm.seconds);
+}
+
+/*
+ * Give CDX pf's idle timeouts, so a pinned flow leaves hardware when pf
+ * would have timed it out (CDX defaults to Linux's TCP 5 days).
+ */
+static void
+conn_sync_cdx_timeouts(struct cmm_global *g)
+{
+	fpp_timeout_cmd_t cmd;
+	int fd, tcp, udp, udp_single;
+
+	if (!pin_supported || g->fci_handle == NULL)
+		return;
+
+	fd = open("/dev/pf", O_RDONLY);
+	if (fd < 0)
+		return;
+	tcp = pf_timeout(fd, PFTM_TCP_ESTABLISHED);
+	udp = pf_timeout(fd, PFTM_UDP_MULTIPLE);
+	udp_single = pf_timeout(fd, PFTM_UDP_SINGLE);
+	close(fd);
+
+	if (tcp > 0 && tcp != cdx_tcp_timeout) {
+		memset(&cmd, 0, sizeof(cmd));
+		cmd.protocol = IPPROTO_TCP;
+		cmd.timeout_value1 = tcp;
+		if (fci_write(g->fci_handle, FPP_CMD_IPV4_SET_TIMEOUT,
+		    sizeof(cmd), (unsigned short *)&cmd) == 0) {
+			cdx_tcp_timeout = tcp;
+			/* Rare (startup or a pf change), so always logged. */
+			cmm_print(CMM_LOG_WARN, "conn: CDX TCP timeout %ds", tcp);
+		}
+	}
+	if (udp > 0 && udp_single > 0 && (udp != cdx_udp_timeout ||
+	    udp_single != cdx_udp_single_timeout)) {
+		memset(&cmd, 0, sizeof(cmd));
+		cmd.protocol = IPPROTO_UDP;
+		cmd.timeout_value1 = udp;
+		cmd.timeout_value2 = udp_single;
+		if (fci_write(g->fci_handle, FPP_CMD_IPV4_SET_TIMEOUT,
+		    sizeof(cmd), (unsigned short *)&cmd) == 0) {
+			cdx_udp_timeout = udp;
+			cdx_udp_single_timeout = udp_single;
+			cmm_print(CMM_LOG_WARN, "conn: CDX UDP timeout %ds/%ds",
+			    udp, udp_single);
+		}
+	}
+}
+
+void
+cmm_conn_pin_init(struct cmm_global *g)
+{
+	struct pfn_pin_update upd;
+
+	/* An empty batch only asks whether the kernel can pin. */
+	memset(&upd, 0, sizeof(upd));
+	pin_supported = (ioctl(g->pfnotify_fd, PFN_IOC_SET_PIN, &upd) == 0);
+	cmm_print(CMM_LOG_WARN, "conn: offload pin %s",
+	    pin_supported ? "supported" :
+	    "not supported, keeping flows alive from CDX counters");
+
+	conn_sync_cdx_timeouts(g);
+	shaper_reload();
+}
+
+/*
+ * Pin (or unpin) the flow's PF states: the primary and, if known, the
+ * companion.  Returns -1 if PF says the TCP flow is already closing, in
+ * which case nothing is left pinned.
+ */
+static int
+conn_pin(struct cmm_global *g, struct cmm_conn *conn, int pin)
+{
+	struct pfn_pin_entry e[2];
+	struct pfn_pin_update upd;
+	uint32_t i, n;
+
+	if (!pin_supported || g->pfnotify_fd < 0)
+		return (0);
+	if (!pin && !(conn->flags & CONN_F_PINNED))
+		return (0);
+
+	memset(e, 0, sizeof(e));
+	n = 0;
+	e[n].id = conn->pf_id;
+	e[n].creatorid = conn->pf_creatorid;
+	e[n].pin = pin;
+	n++;
+	if (conn->pf_has_nat_id) {
+		e[n].id = conn->pf_id_nat;
+		e[n].creatorid = conn->pf_creatorid_nat;
+		e[n].pin = pin;
+		n++;
+	}
+
+	memset(&upd, 0, sizeof(upd));
+	upd.count = n;
+	upd.entries = e;
+	if (ioctl(g->pfnotify_fd, PFN_IOC_SET_PIN, &upd) < 0) {
+		/* Not pinned: stats sync keeps it alive the old way. */
+		cmm_print(CMM_LOG_WARN, "conn: pin ioctl failed: %s",
+		    strerror(errno));
+		return (0);
+	}
+
+	if (!pin) {
+		conn->flags &= ~CONN_F_PINNED;
+		return (0);
+	}
+
+	conn->flags |= CONN_F_PINNED;
+	for (i = 0; i < n; i++) {
+		if (e[i].result == PFN_PIN_CLOSING) {
+			conn_pin(g, conn, 0);
+			return (-1);
+		}
+		/* A rule with its own timeout keeps the counter keep-alive,
+		 * which follows that timeout exactly. */
+		if (e[i].result == PFN_PIN_OWN_TIMEOUT) {
+			conn_pin(g, conn, 0);
+			return (0);
+		}
+	}
+	return (0);
+}
+
+/*
+ * The flow leaves CDX.  in_cdx says whether CDX still holds it (it
+ * doesn't after its own aging removed it, or after a full reset).
+ * Unpinning hands the PF states back to PF's own timeouts.
+ */
+static void
+conn_offload_stop(struct cmm_global *g, struct cmm_conn *conn, int in_cdx)
+{
+	if (!(conn->flags & CONN_F_OFFLOADED))
+		return;
+
+	if (!in_cdx)
+		conn->flags &= ~CONN_F_OFFLOADED;
+	else if (conn->af == AF_INET)
+		cmm_fe_ct4_deregister(g, conn);
+	else
+		cmm_fe_ct6_deregister(g, conn);
+	if (conn_offloaded > 0)
+		conn_offloaded--;
+
+	conn_pin(g, conn, 0);
+}
+
 static void
 conn_remove(struct cmm_global *g, struct cmm_conn *conn)
 {
-	/* Deregister from CDX if offloaded */
-	if (conn->flags & CONN_F_OFFLOADED) {
-		if (conn->af == AF_INET)
-			cmm_fe_ct4_deregister(g, conn);
-		else
-			cmm_fe_ct6_deregister(g, conn);
-		if (conn_offloaded > 0)
-			conn_offloaded--;
-	}
+	/* Deregister from CDX if offloaded.  Unpinning matters when only the
+	 * primary state went away - the companion would otherwise stay
+	 * pinned forever. */
+	conn_offload_stop(g, conn, 1);
 
 	/* Release route references */
 	if (conn->orig_route != NULL) {
@@ -176,6 +351,143 @@ resolve_iif_index(struct cmm_route *opp_route)
 }
 
 /*
+ * Swap *rtp for the route to the same destination keyed on iif.
+ */
+static int
+route_rekey(struct cmm_global *g, struct cmm_route **rtp, int iif)
+{
+	struct cmm_route *old = *rtp, *rt;
+
+	rt = cmm_route_get(g, old->family, old->dst, old->oif_hint, iif);
+	if (rt == NULL)
+		return (-1);
+	*rtp = rt;
+	cmm_route_put(old);
+	return (0);
+}
+
+/* --- Traffic shaper (ipfw dummynet) -------------------------------- */
+
+/*
+ * OPNsense's traffic shaper is ipfw pipes/queues matched per interface,
+ * and CDX can't shape.  Flows through any interface a pipe/queue rule
+ * names stay in software - coarser than ipfw's own match, but a shaped
+ * flow can never skip its pipe.
+ */
+#define SHAPED_ITF_MAX	32
+
+static char shaped_itf[SHAPED_ITF_MAX][IFNAMSIZ];
+static int shaped_itf_count;
+static int shaped_all;		/* a pipe/queue rule with no interface */
+
+static int
+itf_shaped(int ifindex)
+{
+	struct cmm_interface *itf;
+	int i;
+
+	if (shaped_all)
+		return (1);
+	if (shaped_itf_count == 0)
+		return (0);
+	itf = cmm_itf_find_by_index(ifindex);
+	if (itf == NULL)
+		return (0);
+	for (i = 0; i < shaped_itf_count; i++)
+		if (strcmp(itf->ifname, shaped_itf[i]) == 0)
+			return (1);
+	return (0);
+}
+
+/*
+ * One line of "ipfw list": "<nr> pipe|queue <n> ... via|recv|xmit <if> ...".
+ * Adds the interfaces it names to names[], or sets *all if it names none.
+ */
+static void
+shaper_parse_line(char *line, char names[][IFNAMSIZ], int *n, int *all)
+{
+	char *tok, *last;
+	int has_itf, i;
+
+	if (strtok_r(line, " \t\n", &last) == NULL)
+		return;				/* rule number */
+	tok = strtok_r(NULL, " \t\n", &last);
+	if (tok == NULL || (strcmp(tok, "pipe") != 0 &&
+	    strcmp(tok, "queue") != 0))
+		return;
+	has_itf = 0;
+	while ((tok = strtok_r(NULL, " \t\n", &last)) != NULL &&
+	    strcmp(tok, "//") != 0) {
+		if (strcmp(tok, "via") != 0 && strcmp(tok, "recv") != 0 &&
+		    strcmp(tok, "xmit") != 0)
+			continue;
+		tok = strtok_r(NULL, " \t\n", &last);
+		if (tok == NULL)
+			break;
+		has_itf = 1;
+		if (strcmp(tok, "any") == 0) {
+			*all = 1;
+			continue;
+		}
+		for (i = 0; i < *n; i++)
+			if (strcmp(names[i], tok) == 0)
+				break;
+		if (i == *n && *n < SHAPED_ITF_MAX)
+			strlcpy(names[(*n)++], tok, IFNAMSIZ);
+	}
+	if (!has_itf)
+		*all = 1;
+}
+
+/* Re-read ipfw's pipe/queue rules.  Returns 1 if the shaped set changed. */
+static int
+shaper_reload(void)
+{
+	char names[SHAPED_ITF_MAX][IFNAMSIZ];
+	char line[1024];
+	int n, all, i, changed;
+	size_t len;
+	u_int dummy;
+	FILE *fp;
+
+	n = 0;
+	all = 0;
+
+	/* No dummynet loaded means no shaping. */
+	len = sizeof(dummy);
+	if (sysctlbyname("net.inet.ip.dummynet.expire", &dummy, &len,
+	    NULL, 0) == 0 &&
+	    (fp = popen("/sbin/ipfw -q list 2>/dev/null", "r")) != NULL) {
+		while (fgets(line, sizeof(line), fp) != NULL)
+			shaper_parse_line(line, names, &n, &all);
+		pclose(fp);
+	}
+
+	changed = (all != shaped_all || n != shaped_itf_count);
+	for (i = 0; !changed && i < n; i++)
+		if (strcmp(names[i], shaped_itf[i]) != 0)
+			changed = 1;
+	if (!changed)
+		return (0);
+
+	shaped_all = all;
+	shaped_itf_count = n;
+	memcpy(shaped_itf, names, sizeof(names));
+
+	/* Rare (shaper config change), so always logged. */
+	if (all)
+		cmm_print(CMM_LOG_WARN,
+		    "conn: traffic shaper covers all interfaces, not offloading");
+	else if (n == 0)
+		cmm_print(CMM_LOG_WARN, "conn: no traffic shaper interfaces");
+	for (i = 0; !all && i < n; i++)
+		cmm_print(CMM_LOG_WARN,
+		    "conn: traffic shaper on %s, not offloading its flows",
+		    shaped_itf[i]);
+	return (1);
+}
+
+/*
  * Try to offload a connection:
  * 1. Look up routes for both directions
  * 2. Resolve next-hop neighbors (retry-safe)
@@ -184,13 +496,51 @@ resolve_iif_index(struct cmm_route *opp_route)
  *
  * Safe to call multiple times — skips steps already completed.
  */
+/* CDX can't place flows on a LAGG or VLAN it doesn't have registered,
+ * e.g. while a LAGG is down or has no member up. */
+static int
+itf_offload_ready(int ifindex)
+{
+	struct cmm_interface *itf;
+
+	itf = cmm_itf_find_by_index(ifindex);
+	if (itf == NULL)
+		return (1);
+	if ((itf->itf_flags & ITF_F_LAGG) &&
+	    !(itf->itf_flags & ITF_F_FPP_LAGG))
+		return (0);
+	if ((itf->itf_flags & ITF_F_VLAN) &&
+	    !(itf->itf_flags & ITF_F_FPP_VLAN))
+		return (0);
+	return (1);
+}
+
+/* How long a flow seen by only one PF state waits for the other. */
+#define CONN_PAIR_WAIT_S	5
+
 static int
 conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 {
-	/* Look up route for original direction (dst = orig_daddr) */
+	/*
+	 * Wait for both of the flow's PF states, so CDX gets exact tuples at
+	 * once, as from a Linux conntrack.  Offloading on one state's guess
+	 * could send a NAT'd flow's packets out untranslated until the
+	 * other state arrives.  A flow that only ever has one state is
+	 * offloaded on that guess by the retry pass after a short wait.
+	 */
+	if (conn->have_states != (CONN_S_IN | CONN_S_OUT) &&
+	    conn_now() - conn->created < CONN_PAIR_WAIT_S)
+		return (-1);
+
+	/*
+	 * Look up route for original direction.  CDX rewrites the packet's
+	 * destination to the reply's source before forwarding it, so route
+	 * to rep_saddr - the real server for a port forward, and the same
+	 * as orig_daddr for outbound NAT and plain routing.
+	 */
 	if (conn->orig_route == NULL)
 		conn->orig_route = cmm_route_get(g, conn->af,
-		    conn->orig_daddr);
+		    conn->rep_saddr, conn->rt_ifindex, 0);
 	if (conn->orig_route == NULL) {
 		cmm_print(CMM_LOG_DEBUG,
 		    "conn: no route for original direction");
@@ -210,7 +560,7 @@ conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 	 */
 	if (conn->rep_route == NULL)
 		conn->rep_route = cmm_route_get(g, conn->af,
-		    conn->orig_saddr);
+		    conn->orig_saddr, conn->rt_ifindex_rep, 0);
 	if (conn->rep_route == NULL) {
 		cmm_print(CMM_LOG_DEBUG,
 		    "conn: no route for reply direction");
@@ -259,12 +609,39 @@ conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 	}
 
 	/*
-	 * Set input interface for each route: the input for one direction
-	 * is the output of the opposite direction.  CDX needs this to
-	 * install flow classification entries on the correct FMan RX port.
+	 * The input for one direction is the output of the opposite
+	 * direction.  CDX installs flows on the route's input port, so
+	 * switch each direction to the route keyed on its input interface
+	 * rather than setting it on a route other connections share.
 	 */
-	conn->orig_route->iif_index = resolve_iif_index(conn->rep_route);
-	conn->rep_route->iif_index = resolve_iif_index(conn->orig_route);
+	{
+		int iif_orig = resolve_iif_index(conn->rep_route);
+		int iif_rep = resolve_iif_index(conn->orig_route);
+
+		if (conn->orig_route->iif_index != iif_orig &&
+		    route_rekey(g, &conn->orig_route, iif_orig) != 0)
+			return (-1);
+		if (conn->rep_route->iif_index != iif_rep &&
+		    route_rekey(g, &conn->rep_route, iif_rep) != 0)
+			return (-1);
+	}
+
+	/* Each direction's input is the other's output, so this covers
+	 * both ends of the flow. */
+	if (!itf_offload_ready(conn->orig_route->oif_index) ||
+	    !itf_offload_ready(conn->rep_route->oif_index)) {
+		cmm_print(CMM_LOG_DEBUG,
+		    "conn: interface not registered in CDX, not offloading");
+		return (-1);
+	}
+
+	/* Both interfaces again: a shaper on either one needs every packet. */
+	if (itf_shaped(conn->orig_route->oif_index) ||
+	    itf_shaped(conn->rep_route->oif_index)) {
+		cmm_print(CMM_LOG_DEBUG,
+		    "conn: interface has a traffic shaper, not offloading");
+		return (-1);
+	}
 
 	/* Send routes to CDX (idempotent if already programmed) */
 	if (!conn->orig_route->fpp_programmed && !conn->orig_route->fpp_rejected)
@@ -290,9 +667,21 @@ conn_try_offload(struct cmm_global *g, struct cmm_conn *conn)
 			rc = cmm_fe_ct4_register(g, conn);
 		else
 			rc = cmm_fe_ct6_register(g, conn);
-		if (rc == 0)
-			conn_offloaded++;
-		return (rc);
+		if (rc != 0) {
+			conn->flags |= CONN_F_CT_FAILED;
+			return (rc);
+		}
+		conn->flags &= ~(CONN_F_CT_FAILED | CONN_F_IDLE);
+		conn_offloaded++;
+
+		/* A FIN already went through PF, so it can't be pinned -
+		 * leave it to PF's closing timeouts. */
+		if (conn_pin(g, conn, 1) < 0) {
+			conn_offload_stop(g, conn, 1);
+			conn->flags |= CONN_F_CLOSING;
+			return (-1);
+		}
+		return (0);
 	}
 }
 
@@ -366,15 +755,7 @@ cmm_route_invalidate_conns(struct cmm_global *g, struct cmm_route *rt)
 				continue;
 
 			/* Deregister from CDX */
-			if (conn->flags & CONN_F_OFFLOADED) {
-				if (conn->af == AF_INET)
-					cmm_fe_ct4_deregister(g, conn);
-				else
-					cmm_fe_ct6_deregister(g, conn);
-				conn->flags &= ~CONN_F_OFFLOADED;
-				if (conn_offloaded > 0)
-					conn_offloaded--;
-			}
+			conn_offload_stop(g, conn, 1);
 
 			/* Clear route pointers — next poll re-resolves */
 			if (conn->orig_route != NULL) {
@@ -420,7 +801,7 @@ cmm_reset_offload_state(struct cmm_global *g)
 		for (pos = list_first(&conn_hash[i]);
 		    pos != &conn_hash[i]; pos = list_next(pos)) {
 			conn = container_of(pos, struct cmm_conn, hash_entry);
-			conn->flags &= ~CONN_F_OFFLOADED;
+			conn_offload_stop(g, conn, 0);
 			if (conn->orig_route != NULL) {
 				cmm_route_put(conn->orig_route);
 				conn->orig_route = NULL;
@@ -468,32 +849,163 @@ conn_find_by_pfid(uint64_t id, uint32_t creatorid)
 }
 
 /*
- * Extract connection tuples from a pfn_event.
- * Same logic as conn_extract_tuples() but reads from pfn_event.
+ * Same lookup, but by NAT-companion id instead of primary id. A
+ * companion state closing (DELETE, live or missed) doesn't end the
+ * connection - the primary keeps going - so callers use this only to
+ * find and clear stale companion bookkeeping, never to conn_remove().
+ */
+static struct cmm_conn *
+conn_find_by_nat_pfid(uint64_t id, uint32_t creatorid)
+{
+	struct list_head *pos;
+	struct cmm_conn *conn;
+	int i;
+
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn,
+			    hash_entry);
+			if (conn->pf_has_nat_id &&
+			    conn->pf_id_nat == id &&
+			    conn->pf_creatorid_nat == creatorid)
+				return (conn);
+		}
+	}
+	return (NULL);
+}
+
+/*
+ * Clear stale NAT-companion bookkeeping on a connection whose companion
+ * PF state is gone. Leaves the connection and its primary PF state
+ * (and offload) untouched - only the companion fields are reset so
+ * stats-sync stops re-querying a dead id forever.
  */
 static void
-pfn_extract_tuples(struct cmm_conn *conn, const struct pfn_event *ev)
+conn_clear_nat_companion(struct cmm_conn *conn)
+{
+	conn->pf_id_nat = 0;
+	conn->pf_creatorid_nat = 0;
+	conn->pf_has_nat_id = 0;
+	conn->have_states &= (conn->pf_direction_nat == PF_IN) ?
+	    ~CONN_S_IN : ~CONN_S_OUT;
+	if (conn->flags & CONN_F_NAT_COMPANION)
+		conn->flags &= ~(CONN_F_HAS_NAT | CONN_F_NAT_COMPANION);
+}
+
+/*
+ * One of the event's keys (0 = wire, 1 = stack) as a tuple in the state's
+ * own packet direction.  Unused address bytes stay zero.
+ */
+static void
+pfn_key_tuple(const struct pfn_event *ev, int k, uint8_t *saddr,
+    uint8_t *daddr, uint16_t *sport, uint16_t *dport)
 {
 	int sidx, didx, alen;
 
-	conn->af = ev->key[0].af;
-	conn->proto = ev->key[0].proto;
-	alen = (conn->af == AF_INET) ? 4 : 16;
-
 	sidx = (ev->direction == PF_IN) ? 0 : 1;
 	didx = (ev->direction == PF_IN) ? 1 : 0;
+	alen = (ev->key[0].af == AF_INET) ? 4 : 16;
 
-	/* Original direction: STACK key (index 1) */
-	memcpy(conn->orig_saddr, ev->key[1].addr[sidx], alen);
-	memcpy(conn->orig_daddr, ev->key[1].addr[didx], alen);
-	conn->orig_sport = ev->key[1].port[sidx];
-	conn->orig_dport = ev->key[1].port[didx];
+	memset(saddr, 0, 16);
+	memset(daddr, 0, 16);
+	memcpy(saddr, ev->key[k].addr[sidx], alen);
+	memcpy(daddr, ev->key[k].addr[didx], alen);
+	*sport = ev->key[k].port[sidx];
+	*dport = ev->key[k].port[didx];
+}
 
-	/* Reply direction: WIRE key (index 0), reversed */
-	memcpy(conn->rep_saddr, ev->key[0].addr[didx], alen);
-	memcpy(conn->rep_daddr, ev->key[0].addr[sidx], alen);
-	conn->rep_sport = ev->key[0].port[didx];
-	conn->rep_dport = ev->key[0].port[sidx];
+/* Record a PF state's wire tuple under its role (entering or leaving). */
+static void
+conn_note_state(struct cmm_conn *conn, const struct pfn_event *ev)
+{
+	if (ev->direction == PF_IN) {
+		pfn_key_tuple(ev, 0, conn->in_saddr, conn->in_daddr,
+		    &conn->in_sport, &conn->in_dport);
+		conn->have_states |= CONN_S_IN;
+	} else {
+		pfn_key_tuple(ev, 0, conn->out_saddr, conn->out_daddr,
+		    &conn->out_sport, &conn->out_dport);
+		conn->have_states |= CONN_S_OUT;
+	}
+}
+
+static time_t
+conn_now(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (ts.tv_sec);
+}
+
+/*
+ * Set the tuples CDX matches, as packets reach the router - the same as
+ * ASK's conntrack orig/reply tuples.  Original: as the flow enters (the
+ * entering state's wire key).  Reply: as it comes back where the flow
+ * leaves (the leaving state's wire key, reversed).  A state not seen yet
+ * is taken as untranslated (the identity key).  Right for outbound NAT,
+ * port forwards, NAT reflection and plain routing alike.
+ *
+ * If the tuples change, the flow first leaves CDX under the old ones.
+ */
+static void
+conn_update_tuples(struct cmm_global *g, struct cmm_conn *conn)
+{
+	uint8_t os[16], od[16], rs[16], rd[16];
+	uint16_t osp, odp, rsp, rdp;
+
+	if (conn->have_states & CONN_S_IN) {
+		memcpy(os, conn->in_saddr, 16);
+		memcpy(od, conn->in_daddr, 16);
+		osp = conn->in_sport;
+		odp = conn->in_dport;
+	} else {
+		memcpy(os, conn->key_saddr, 16);
+		memcpy(od, conn->key_daddr, 16);
+		osp = conn->key_sport;
+		odp = conn->key_dport;
+	}
+	if (conn->have_states & CONN_S_OUT) {
+		memcpy(rs, conn->out_daddr, 16);
+		memcpy(rd, conn->out_saddr, 16);
+		rsp = conn->out_dport;
+		rdp = conn->out_sport;
+	} else {
+		memcpy(rs, conn->key_daddr, 16);
+		memcpy(rd, conn->key_saddr, 16);
+		rsp = conn->key_dport;
+		rdp = conn->key_sport;
+	}
+
+	if (memcmp(os, conn->orig_saddr, 16) == 0 &&
+	    memcmp(od, conn->orig_daddr, 16) == 0 &&
+	    osp == conn->orig_sport && odp == conn->orig_dport &&
+	    memcmp(rs, conn->rep_saddr, 16) == 0 &&
+	    memcmp(rd, conn->rep_daddr, 16) == 0 &&
+	    rsp == conn->rep_sport && rdp == conn->rep_dport)
+		return;
+
+	conn_offload_stop(g, conn, 1);
+
+	memcpy(conn->orig_saddr, os, 16);
+	memcpy(conn->orig_daddr, od, 16);
+	conn->orig_sport = osp;
+	conn->orig_dport = odp;
+	memcpy(conn->rep_saddr, rs, 16);
+	memcpy(conn->rep_daddr, rd, 16);
+	conn->rep_sport = rsp;
+	conn->rep_dport = rdp;
+
+	/* Both routes follow these addresses - re-resolve them. */
+	if (conn->orig_route != NULL) {
+		cmm_route_put(conn->orig_route);
+		conn->orig_route = NULL;
+	}
+	if (conn->rep_route != NULL) {
+		cmm_route_put(conn->rep_route);
+		conn->rep_route = NULL;
+	}
 }
 
 /*
@@ -572,7 +1084,7 @@ static void
 handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 {
 	struct cmm_conn *conn;
-	int sidx, didx, alen, is_nat;
+	int sidx, didx, alen, is_nat, no_offload;
 	uint8_t osaddr[16], odaddr[16];
 	uint16_t osport, odport;
 	sa_family_t af;
@@ -588,6 +1100,7 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 	alen = (af == AF_INET) ? 4 : 16;
 	is_nat = memcmp(&ev->key[0], &ev->key[1],
 	    sizeof(struct pfn_state_key)) != 0;
+	no_offload = (ev->flags & PFN_EVF_NO_OFFLOAD) != 0;
 
 	/* Extract original 5-tuple from STACK key */
 	memset(osaddr, 0, sizeof(osaddr));
@@ -597,49 +1110,53 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 	osport = ev->key[1].port[sidx];
 	odport = ev->key[1].port[didx];
 
-	/* Check deny rules */
+	/* A deny rule matching either of the flow's states keeps the whole
+	 * flow in software, the same as a state PF must see. */
 	if (cmm_deny_check_tuple(af, proto, osaddr, odaddr,
 	    osport, odport, ev->ifname))
-		return;
+		no_offload = 1;
 
 	conn = conn_find_5tuple(af, proto, osaddr, odaddr, osport, odport);
 	if (conn != NULL) {
-		/* Existing connection — handle NAT upgrade */
-		if (is_nat && !(conn->flags & CONN_F_HAS_NAT)) {
-			cmm_print(CMM_LOG_INFO,
-			    "conn: NAT upgrade from push event");
-
-			if (conn->flags & CONN_F_OFFLOADED) {
-				if (conn->af == AF_INET)
-					cmm_fe_ct4_deregister(g, conn);
-				else
-					cmm_fe_ct6_deregister(g, conn);
-				conn->flags &= ~CONN_F_OFFLOADED;
-				if (conn_offloaded > 0)
-					conn_offloaded--;
-			}
-
-			/* Update reply tuples from wire key */
-			memcpy(conn->rep_saddr,
-			    ev->key[0].addr[didx], alen);
-			memcpy(conn->rep_daddr,
-			    ev->key[0].addr[sidx], alen);
-			conn->rep_sport = ev->key[0].port[didx];
-			conn->rep_dport = ev->key[0].port[sidx];
-
-			if (conn->rep_route != NULL) {
-				cmm_route_put(conn->rep_route);
-				conn->rep_route = NULL;
-			}
-
-			/* Save NAT companion PF state ID */
-			conn->pf_id_nat = ev->id;
-			conn->pf_creatorid_nat = ev->creatorid;
-			conn->pf_has_nat_id = 1;
-
-			conn->flags |= CONN_F_HAS_NAT;
+		/* One of the flow's states needs PF on every packet - take
+		 * it back out of CDX if the other state got it there. */
+		if (no_offload && !(conn->flags & CONN_F_NO_OFFLOAD)) {
+			cmm_print(CMM_LOG_DEBUG,
+			    "conn: proto=%u needs PF (seq rewrite or dummynet), "
+			    "not offloading", conn->proto);
+			conn_offload_stop(g, conn, 1);
+			conn->flags |= CONN_F_NO_OFFLOAD;
 		}
 
+		/* The flow's other PF state.  With both known the CDX tuples
+		 * are exact; if a one-state guess was already offloaded and was
+		 * wrong, it comes out of CDX here. */
+		if (!conn->pf_has_nat_id && (ev->id != conn->pf_id ||
+		    ev->creatorid != conn->pf_creatorid)) {
+			conn->pf_id_nat = ev->id;
+			conn->pf_creatorid_nat = ev->creatorid;
+			conn->pf_direction_nat = ev->direction;
+			conn->pf_has_nat_id = 1;
+			if (is_nat)
+				conn->flags |= CONN_F_HAS_NAT |
+				    CONN_F_NAT_COMPANION;
+
+			conn_note_state(conn, ev);
+			conn_update_tuples(g, conn);
+
+			/* Still in CDX: pin the new state too. */
+			if ((conn->flags & CONN_F_PINNED) &&
+			    conn_pin(g, conn, 1) < 0) {
+				conn_offload_stop(g, conn, 1);
+				conn->flags |= CONN_F_CLOSING;
+			}
+		}
+
+		if (conn->flags & (CONN_F_CLOSING | CONN_F_NO_OFFLOAD))
+			return;
+
+		/* Traffic is back through PF after CDX aged the flow out. */
+		conn->flags &= ~CONN_F_IDLE;
 		if (!(conn->flags & CONN_F_OFFLOADED))
 			conn_try_offload(g, conn);
 		return;
@@ -653,31 +1170,45 @@ handle_pf_ready(struct cmm_global *g, const struct pfn_event *ev)
 	if (conn == NULL)
 		return;
 
-	pfn_extract_tuples(conn, ev);
+	conn->af = af;
+	conn->proto = proto;
+	pfn_key_tuple(ev, 1, conn->key_saddr, conn->key_daddr,
+	    &conn->key_sport, &conn->key_dport);
+	conn_note_state(conn, ev);
+	conn_update_tuples(g, conn);
+	conn->created = conn_now();
 	conn->pf_id = ev->id;
 	conn->pf_creatorid = ev->creatorid;
 	conn->pf_direction = ev->direction;
 	strlcpy(conn->ifname, ev->ifname, sizeof(conn->ifname));
+	conn->rt_ifindex = ev->rt_ifindex;
+	/* rt_ifindex_rep stays 0 (calloc) - the reply path resolves via
+	 * the normal FIB, not this connection's outbound route-to hint. */
 	conn->hash_entry.next = NULL;
 	conn->hash_entry.prev = NULL;
 
 	if (is_nat)
 		conn->flags |= CONN_F_HAS_NAT;
+	if (no_offload)
+		conn->flags |= CONN_F_NO_OFFLOAD;
 
 	{
 		unsigned int h;
 
 		h = conn_hash_5tuple(conn->af, conn->proto,
-		    conn->orig_saddr, conn->orig_daddr,
-		    conn->orig_sport, conn->orig_dport);
+		    conn->key_saddr, conn->key_daddr,
+		    conn->key_sport, conn->key_dport);
 		list_add(&conn_hash[h], &conn->hash_entry);
 		conn_count++;
 	}
 
-	if (conn_try_offload(g, conn) < 0) {
-		cmm_print(CMM_LOG_DEBUG,
-		    "conn: offload deferred (route/neigh pending)");
-	}
+	/* Tracked anyway, so the flow's other state can't offload it. */
+	if (conn->flags & CONN_F_NO_OFFLOAD)
+		return;
+
+	/* Usually waits here for the flow's other state (see
+	 * conn_try_offload()). */
+	conn_try_offload(g, conn);
 }
 
 /*
@@ -690,6 +1221,19 @@ handle_pf_delete(struct cmm_global *g, const struct pfn_event *ev)
 
 	conn = conn_find_by_pfid(ev->id, ev->creatorid);
 	if (conn == NULL) {
+		/* Not a primary id - check whether it's a NAT companion
+		 * closing on its own (e.g. asymmetric close) while the
+		 * primary connection is still alive. That's not an
+		 * unknown id, just stale bookkeeping to clear. */
+		conn = conn_find_by_nat_pfid(ev->id, ev->creatorid);
+		if (conn != NULL) {
+			cmm_print(CMM_LOG_DEBUG,
+			    "conn: proto=%u NAT companion closed, "
+			    "clearing stale companion id", conn->proto);
+			conn_clear_nat_companion(conn);
+			return;
+		}
+
 		cmm_print(CMM_LOG_TRACE,
 		    "conn: DELETE for unknown id=%016llx",
 		    (unsigned long long)ev->id);
@@ -761,29 +1305,130 @@ cmm_conn_event(struct cmm_global *g)
 }
 
 /*
- * Periodic maintenance: retry offload for connections that are
- * tracked but not yet offloaded (e.g., after interface reassignment
- * or route change), garbage-collect unreferenced routes, and log stats.
+ * fpp_rejected is armed so the next route event re-resolves and
+ * reprograms the holder (we-are-mono/ASK's FPP_NEEDS_UPDATE plays the
+ * same role for its tunnels/sockets/SAs). Called from
+ * cmm_route_handle_change() so a connection rejected only because
+ * CDX didn't know its interface yet (issue #11's boot race: cmm
+ * starting before WAN finishes its post-DHCP reconfiguration)
+ * recovers as soon as a route event arrives, whatever event that is
+ * - not bounded by CMM_MAINT_MS. Also called from the periodic
+ * maintenance pass as a backstop for rejections with no dedicated
+ * event (e.g. CDX-side transient failures).
  */
-void
-cmm_conn_maintenance(struct cmm_global *g)
+static void
+conn_clear_ct_failed(void)
 {
 	struct cmm_conn *conn;
 	struct list_head *pos;
 	int i;
-	unsigned int retried = 0;
 
 	for (i = 0; i < CONN_HASH_SIZE; i++) {
 		for (pos = list_first(&conn_hash[i]);
 		    pos != &conn_hash[i]; pos = list_next(pos)) {
 			conn = container_of(pos, struct cmm_conn,
 			    hash_entry);
-			if (!(conn->flags & CONN_F_OFFLOADED)) {
-				if (conn_try_offload(g, conn) == 0)
+			conn->flags &= ~CONN_F_CT_FAILED;
+		}
+	}
+}
+
+unsigned int
+cmm_conn_retry_rejected(struct cmm_global *g)
+{
+	struct cmm_conn *conn;
+	struct list_head *pos;
+	int i;
+	unsigned int retried = 0;
+
+	/* Catch gateway MAC changes before retrying offload, so anything
+	 * just invalidated re-offloads in this same pass. */
+	cmm_route_check_neigh_changes(g);
+
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn,
+			    hash_entry);
+			/* Don't hammer CDX with a flow it just refused;
+			 * maintenance clears the flag for the next try.  An
+			 * idle flow waits for its next packet (READY) instead,
+			 * and a closing one stays with PF. */
+			if (!(conn->flags & (CONN_F_OFFLOADED | CONN_F_CT_FAILED |
+			    CONN_F_IDLE | CONN_F_CLOSING | CONN_F_NO_OFFLOAD))) {
+				int was_rejected =
+				    (conn->orig_route != NULL &&
+				    conn->orig_route->fpp_rejected) ||
+				    (conn->rep_route != NULL &&
+				    conn->rep_route->fpp_rejected);
+
+				if (conn->orig_route != NULL)
+					conn->orig_route->fpp_rejected = 0;
+				if (conn->rep_route != NULL)
+					conn->rep_route->fpp_rejected = 0;
+				if (conn_try_offload(g, conn) == 0) {
 					retried++;
+					if (was_rejected)
+						/* Always log recovery, so a boot-time rejection is easy to confirm fixed. */
+						cmm_print(CMM_LOG_ERR,
+						    "conn: route id=%u "
+						    "recovered from earlier "
+						    "CDX rejection, offload "
+						    "now active",
+						    conn->orig_route->fpp_id);
+				}
 			}
 		}
 	}
+
+	return (retried);
+}
+
+/*
+ * Periodic maintenance: retry offload for connections rejected for
+ * reasons with no dedicated event (backstop for
+ * cmm_conn_retry_rejected()'s event-driven callers), garbage-collect
+ * unreferenced routes, and log stats.
+ */
+void
+cmm_conn_maintenance(struct cmm_global *g)
+{
+	unsigned int retried;
+
+	/* Catch gateway MAC changes before retrying offload, so anything
+	 * just invalidated re-offloads in this same pass. */
+	cmm_route_check_neigh_changes(g);
+
+	/* Catch laggproto changes with no triggering event (see
+	 * cmm_lagg_recheck_all()'s comment) before retrying offload, same
+	 * reasoning as the MAC-change check above. */
+	cmm_lagg_recheck_all(g);
+
+	/* OPNsense can change pf's timeouts on any filter reload. */
+	conn_sync_cdx_timeouts(g);
+
+	/* A newly shaped interface takes its flows back out of CDX; the
+	 * retry pass below re-offloads them once a shaper is removed. */
+	if (shaper_reload()) {
+		struct cmm_conn *conn;
+		struct list_head *pos;
+		int i;
+
+		for (i = 0; i < CONN_HASH_SIZE; i++) {
+			for (pos = list_first(&conn_hash[i]);
+			    pos != &conn_hash[i]; pos = list_next(pos)) {
+				conn = container_of(pos, struct cmm_conn,
+				    hash_entry);
+				if ((conn->flags & CONN_F_OFFLOADED) &&
+				    (itf_shaped(conn->orig_route->oif_index) ||
+				    itf_shaped(conn->rep_route->oif_index)))
+					conn_offload_stop(g, conn, 1);
+			}
+		}
+	}
+
+	conn_clear_ct_failed();
+	retried = cmm_conn_retry_rejected(g);
 
 	if (retried > 0)
 		cmm_print(CMM_LOG_INFO,
@@ -798,6 +1443,9 @@ cmm_conn_maintenance(struct cmm_global *g)
 
 /* --- CDX flow counter sync to PF state table --------------------- */
 
+/* Conns marked CONN_F_ORPHAN during this stats sync pass. */
+static unsigned int stats_orphans;
+
 /*
  * Flush a batch of counter entries to pf_notify via ioctl.
  */
@@ -806,6 +1454,8 @@ stats_sync_flush(struct cmm_global *g, struct pfn_counter_entry *entries,
     uint32_t count)
 {
 	struct pfn_counter_update upd;
+	struct cmm_conn *conn;
+	uint32_t i;
 
 	if (count == 0)
 		return;
@@ -814,29 +1464,121 @@ stats_sync_flush(struct cmm_global *g, struct pfn_counter_entry *entries,
 	upd.pad = 0;
 	upd.entries = entries;
 
-	if (ioctl(g->pfnotify_fd, PFN_IOC_UPDATE_COUNTERS, &upd) < 0)
+	if (ioctl(g->pfnotify_fd, PFN_IOC_UPDATE_COUNTERS, &upd) < 0) {
 		cmm_print(CMM_LOG_WARN, "stats_sync: ioctl failed: %s",
 		    strerror(errno));
+		return;
+	}
+
+	/* PF has no state for this id — it was already torn down and we
+	 * missed the DELETE event (e.g. a full ring). Check the primary
+	 * id first: a missing primary means the whole conn is orphaned.
+	 * A missing NAT-companion id doesn't end the conn - the primary
+	 * is unaffected - so that case only clears the stale companion
+	 * bookkeeping instead of removing anything. */
+	for (i = 0; i < count; i++) {
+		if (!entries[i].missing)
+			continue;
+		conn = conn_find_by_pfid(entries[i].id, entries[i].creatorid);
+		if (conn != NULL) {
+			cmm_print(CMM_LOG_INFO,
+			    "conn: proto=%u orphaned (PF state gone, "
+			    "DELETE missed)", conn->proto);
+			/* Removed after the scan: the caller may be standing
+			 * on this conn mid-loop. */
+			if (!(conn->flags & CONN_F_ORPHAN)) {
+				conn->flags |= CONN_F_ORPHAN;
+				stats_orphans++;
+			}
+			continue;
+		}
+
+		conn = conn_find_by_nat_pfid(entries[i].id,
+		    entries[i].creatorid);
+		if (conn == NULL)
+			continue;
+		cmm_print(CMM_LOG_DEBUG,
+		    "conn: proto=%u NAT companion gone (DELETE missed), "
+		    "clearing stale companion id", conn->proto);
+		conn_clear_nat_companion(conn);
+	}
+}
+
+/*
+ * Per-tick cap on connections queried.  fci_cmd() blocks on a real
+ * ioctl round-trip per connection, on the same thread that services
+ * pfnotify/rtsock - querying the whole table in one call stalls both
+ * for however long that takes.  1024 keeps a full lap (at a realistic
+ * few thousand offloaded connections) well under pf's 30s single-
+ * direction UDP timeout, so a slow lap can't cost a live connection
+ * its PF state and force an avoidable re-offload.
+ */
+#define CMM_STATS_SYNC_MAX_PER_TICK	1024
+
+/*
+ * Read and reset CDX's counters for one direction of a flow. CDX keeps
+ * separate counters for the original and reply directions.
+ */
+static int
+conn_flow_stat(struct cmm_global *g, const struct cmm_conn *conn, int reply,
+    uint64_t *packets, uint64_t *bytes)
+{
+	fpp_stat_flow_status_cmd_t cmd;
+	fpp_stat_flow_entry_response_t resp;
+	unsigned short resp_len;
+	const uint8_t *saddr, *daddr;
+
+	saddr = reply ? conn->rep_saddr : conn->orig_saddr;
+	daddr = reply ? conn->rep_daddr : conn->orig_daddr;
+
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.action = FPP_CMM_STAT_QUERY_RESET;
+	cmd.ip_family = (conn->af == AF_INET) ? 4 : 6;
+	cmd.Protocol = conn->proto;
+	cmd.Sport = reply ? conn->rep_sport : conn->orig_sport;
+	cmd.Dport = reply ? conn->rep_dport : conn->orig_dport;
+
+	if (conn->af == AF_INET) {
+		memcpy(&cmd.Saddr, saddr, 4);
+		memcpy(&cmd.Daddr, daddr, 4);
+	} else {
+		memcpy(cmd.Saddr_v6, saddr, 16);
+		memcpy(cmd.Daddr_v6, daddr, 16);
+	}
+
+	resp_len = sizeof(resp);
+	if (fci_cmd(g->fci_handle, FPP_CMD_STAT_FLOW,
+	    (unsigned short *)&cmd, sizeof(cmd),
+	    (unsigned short *)&resp, &resp_len) != 0)
+		return (-1);
+
+	*packets = resp.TotalPackets;
+	*bytes = resp.TotalBytes;
+	return (0);
 }
 
 void
 cmm_conn_stats_sync(struct cmm_global *g)
 {
 	struct pfn_counter_entry batch[PFN_COUNTER_BATCH_MAX];
-	fpp_stat_flow_status_cmd_t cmd;
-	fpp_stat_flow_entry_response_t resp;
-	unsigned short resp_len;
+	uint64_t pkts[2], bytes[2];
 	struct cmm_conn *conn;
 	struct list_head *pos;
+	static unsigned int cursor;
+	unsigned int start, i, matched;
 	uint32_t n;
-	int i, rc;
 
 	if (g->pfnotify_fd < 0)
 		return;
 
+	if (cursor >= CONN_HASH_SIZE)
+		cursor = 0;
+	start = cursor;
 	n = 0;
+	matched = 0;
 
-	for (i = 0; i < CONN_HASH_SIZE; i++) {
+	i = start;
+	do {
 		for (pos = list_first(&conn_hash[i]);
 		    pos != &conn_hash[i]; pos = list_next(pos)) {
 			conn = container_of(pos, struct cmm_conn, hash_entry);
@@ -844,40 +1586,42 @@ cmm_conn_stats_sync(struct cmm_global *g)
 			if (!(conn->flags & CONN_F_OFFLOADED))
 				continue;
 
-			/* Build stat query for this flow's original 5-tuple */
-			memset(&cmd, 0, sizeof(cmd));
-			cmd.action = FPP_CMM_STAT_QUERY_RESET;
-			cmd.ip_family = (conn->af == AF_INET) ? 4 : 6;
-			cmd.Protocol = conn->proto;
-			cmd.Sport = conn->orig_sport;
-			cmd.Dport = conn->orig_dport;
+			if (matched >= CMM_STATS_SYNC_MAX_PER_TICK)
+				goto done_scan;
+			matched++;
 
-			if (conn->af == AF_INET) {
-				memcpy(&cmd.Saddr, conn->orig_saddr, 4);
-				memcpy(&cmd.Daddr, conn->orig_daddr, 4);
-			} else {
-				memcpy(cmd.Saddr_v6, conn->orig_saddr, 16);
-				memcpy(cmd.Daddr_v6, conn->orig_daddr, 16);
-			}
-
-			resp_len = sizeof(resp);
-			rc = fci_cmd(g->fci_handle, FPP_CMD_STAT_FLOW,
-			    (unsigned short *)&cmd, sizeof(cmd),
-			    (unsigned short *)&resp, &resp_len);
-			if (rc != 0)
+			/* Check both directions: a mostly one-way flow (e.g. a
+			 * download) can show nothing in the original direction,
+			 * and skipping it would let PF expire the flow. */
+			if (conn_flow_stat(g, conn, 0, &pkts[0], &bytes[0]) != 0) {
+				/* CDX lost a pinned flow without telling us -
+				 * don't leave its PF states pinned forever. */
+				if (conn->flags & CONN_F_PINNED) {
+					conn_offload_stop(g, conn, 1);
+					conn->flags |= CONN_F_IDLE;
+				}
 				continue;
-			if (resp.TotalPackets == 0 && resp.TotalBytes == 0)
+			}
+			if (conn_flow_stat(g, conn, 1, &pkts[1], &bytes[1]) != 0)
+				pkts[1] = bytes[1] = 0;
+			if (pkts[0] == 0 && pkts[1] == 0)
 				continue;
 
 			/* Primary PF state */
 			memset(&batch[n], 0, sizeof(batch[n]));
 			batch[n].id = conn->pf_id;
 			batch[n].creatorid = conn->pf_creatorid;
-			batch[n].packets[0] = resp.TotalPackets;
-			batch[n].bytes[0] = resp.TotalBytes;
+			batch[n].packets[0] = pkts[0];
+			batch[n].packets[1] = pkts[1];
+			batch[n].bytes[0] = bytes[0];
+			batch[n].bytes[1] = bytes[1];
 			n++;
 
-			/* NAT companion PF state (if present) */
+			/* NAT companion PF state (if present). Traffic is
+			 * credited to the primary only - one flow, one
+			 * count. This entry just keeps its expire refreshed
+			 * - still needed once a half-closed TCP flow has
+			 * been unpinned by its FIN. */
 			if (conn->pf_has_nat_id) {
 				if (n >= PFN_COUNTER_BATCH_MAX)
 					stats_sync_flush(g, batch, n),
@@ -885,8 +1629,6 @@ cmm_conn_stats_sync(struct cmm_global *g)
 				memset(&batch[n], 0, sizeof(batch[n]));
 				batch[n].id = conn->pf_id_nat;
 				batch[n].creatorid = conn->pf_creatorid_nat;
-				batch[n].packets[0] = resp.TotalPackets;
-				batch[n].bytes[0] = resp.TotalBytes;
 				n++;
 			}
 
@@ -895,10 +1637,35 @@ cmm_conn_stats_sync(struct cmm_global *g)
 				n = 0;
 			}
 		}
-	}
+
+		i = (i + 1 == CONN_HASH_SIZE) ? 0 : i + 1;
+	} while (i != start);
+
+done_scan:
+	/* Resume from here next tick - past the last bucket we finished,
+	 * or the one we stopped mid-way through on hitting the cap. */
+	cursor = i;
 
 	/* Flush remaining */
 	stats_sync_flush(g, batch, n);
+
+	/* Now it's safe to remove conns whose PF state is gone. */
+	if (stats_orphans > 0) {
+		struct list_head *tmp;
+
+		for (i = 0; i < CONN_HASH_SIZE; i++) {
+			pos = list_first(&conn_hash[i]);
+			while (pos != &conn_hash[i]) {
+				tmp = list_next(pos);
+				conn = container_of(pos, struct cmm_conn,
+				    hash_entry);
+				if (conn->flags & CONN_F_ORPHAN)
+					conn_remove(g, conn);
+				pos = tmp;
+			}
+		}
+		stats_orphans = 0;
+	}
 
 	cmm_print(CMM_LOG_TRACE, "stats sync done");
 }
@@ -912,10 +1679,64 @@ cmm_conn_stats_sync(struct cmm_global *g)
  * TCP FIN, it removes the flow from the FMan hash table and sends
  * CMD_IPV4_CONNTRACK_CHANGE or CMD_IPV6_CONNTRACK_CHANGE via FCI.
  *
- * We clear CONN_F_OFFLOADED so the next poll/event cycle can
- * re-offload if the PF state is still alive.  We do NOT call
- * cmm_fe_ct*_deregister() because CDX already removed the flow.
+ * Like ASK's cmmFeCtChange4(), this ends the flow's time in hardware.
+ * CDX already removed it, so there's no deregister.  A pinned flow is
+ * unpinned (PF times it out normally from now) and waits for its next
+ * packet through PF to re-offload; without pinning, the retry pass
+ * re-offloads it if the PF state is still alive.
  */
+/*
+ * Find a conn by the original tuple CDX was given.  That's the identity
+ * key for everything but a port forward, so try the hash first and only
+ * scan when it misses.
+ */
+static struct cmm_conn *
+conn_find_cdx(sa_family_t af, uint8_t proto, const void *saddr,
+    const void *daddr, uint16_t sport, uint16_t dport)
+{
+	struct cmm_conn *conn;
+	struct list_head *pos;
+	int i, alen;
+
+	alen = (af == AF_INET) ? 4 : 16;
+	conn = conn_find_5tuple(af, proto, saddr, daddr, sport, dport);
+	if (conn != NULL)
+		return (conn);
+
+	for (i = 0; i < CONN_HASH_SIZE; i++) {
+		for (pos = list_first(&conn_hash[i]);
+		    pos != &conn_hash[i]; pos = list_next(pos)) {
+			conn = container_of(pos, struct cmm_conn, hash_entry);
+			if (conn->af == af && conn->proto == proto &&
+			    conn->orig_sport == sport &&
+			    conn->orig_dport == dport &&
+			    memcmp(conn->orig_saddr, saddr, alen) == 0 &&
+			    memcmp(conn->orig_daddr, daddr, alen) == 0)
+				return (conn);
+		}
+	}
+	return (NULL);
+}
+
+static void
+conn_cdx_removed(struct cmm_conn *conn, const char *family,
+    const char *reason)
+{
+	int was_pinned;
+
+	if (!(conn->flags & CONN_F_OFFLOADED))
+		return;
+
+	was_pinned = conn->flags & CONN_F_PINNED;
+	conn_offload_stop(&cmm_g, conn, 0);
+	if (was_pinned)
+		conn->flags |= CONN_F_IDLE;
+
+	cmm_print(CMM_LOG_INFO, "conn: CDX removed %s proto=%u (%s)%s",
+	    family, conn->proto, reason,
+	    was_pinned ? ", unpinned" : ", will re-offload if PF state alive");
+}
+
 int
 cmm_conn_fci_event(unsigned short fcode, unsigned short len,
     unsigned short *payload)
@@ -938,7 +1759,7 @@ cmm_conn_fci_event(unsigned short fcode, unsigned short len,
 		reason = (cmd->action == FPP_ACTION_TCP_FIN) ?
 		    "tcp_fin" : "timeout";
 
-		conn = conn_find_5tuple(AF_INET, cmd->protocol,
+		conn = conn_find_cdx(AF_INET, cmd->protocol,
 		    &cmd->saddr, &cmd->daddr,
 		    cmd->sport, cmd->dport);
 		if (conn == NULL) {
@@ -948,15 +1769,7 @@ cmm_conn_fci_event(unsigned short fcode, unsigned short len,
 			return (FCI_CB_CONTINUE);
 		}
 
-		if (conn->flags & CONN_F_OFFLOADED) {
-			conn->flags &= ~CONN_F_OFFLOADED;
-			if (conn_offloaded > 0)
-				conn_offloaded--;
-			cmm_print(CMM_LOG_INFO,
-			    "conn: CDX removed IPv4 proto=%u (%s)"
-			    " — will re-offload if PF state alive",
-			    conn->proto, reason);
-		}
+		conn_cdx_removed(conn, "IPv4", reason);
 
 		return (FCI_CB_CONTINUE);
 	}
@@ -976,7 +1789,7 @@ cmm_conn_fci_event(unsigned short fcode, unsigned short len,
 		reason = (cmd->action == FPP_ACTION_TCP_FIN) ?
 		    "tcp_fin" : "timeout";
 
-		conn = conn_find_5tuple(AF_INET6, cmd->protocol,
+		conn = conn_find_cdx(AF_INET6, cmd->protocol,
 		    cmd->saddr, cmd->daddr,
 		    cmd->sport, cmd->dport);
 		if (conn == NULL) {
@@ -986,15 +1799,7 @@ cmm_conn_fci_event(unsigned short fcode, unsigned short len,
 			return (FCI_CB_CONTINUE);
 		}
 
-		if (conn->flags & CONN_F_OFFLOADED) {
-			conn->flags &= ~CONN_F_OFFLOADED;
-			if (conn_offloaded > 0)
-				conn_offloaded--;
-			cmm_print(CMM_LOG_INFO,
-			    "conn: CDX removed IPv6 proto=%u (%s)"
-			    " — will re-offload if PF state alive",
-			    conn->proto, reason);
-		}
+		conn_cdx_removed(conn, "IPv6", reason);
 
 		return (FCI_CB_CONTINUE);
 	}
