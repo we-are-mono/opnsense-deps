@@ -18,7 +18,7 @@
 
 #define FCI_MSG_MAX_PAYLOAD	512
 #define FCI_MSG_HDR_SIZE	4	/* fcode(2) + length(2) */
-#define FCI_MAX_EVENTS		64	/* async event ring buffer size */
+#define FCI_MAX_EVENTS		1024	/* async event ring buffer size */
 
 /*
  * Synchronous command/response ioctl structure.
