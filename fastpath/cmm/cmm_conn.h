@@ -21,6 +21,14 @@
 #define CONN_F_ORIG_DIR		0x02	/* offload original direction */
 #define CONN_F_REP_DIR		0x04	/* offload reply direction */
 #define CONN_F_HAS_NAT		0x08	/* reply tuples from PF_OUT (NAT) */
+#define CONN_F_CT_FAILED	0x10	/* CDX refused it; retry on maintenance */
+#define CONN_F_NAT_COMPANION	0x20	/* companion state is the NAT one */
+#define CONN_F_PINNED		0x40	/* PF states pinned while offloaded */
+#define CONN_F_IDLE		0x80	/* CDX aged it out; wait for traffic */
+#define CONN_F_CLOSING		0x100	/* TCP closing, don't offload again */
+#define CONN_F_ORPHAN		0x200	/* PF state gone, remove after scan */
+#define CONN_F_NO_OFFLOAD	0x400	/* PF must see every packet (seq
+					 * rewrite, dummynet) - never offload */
 
 struct cmm_conn {
 	struct list_head	hash_entry;	/* hash by original 5-tuple */
@@ -44,7 +52,8 @@ struct cmm_conn {
 	uint32_t		pf_creatorid;
 	uint8_t			pf_direction;
 
-	/* NAT companion PF state (PF_OUT state for NAT connections) */
+	/* Companion PF state: the flow's other state (PF_OUT for NAT, or
+	 * the second interface's state), kept alive with the primary. */
 	uint64_t		pf_id_nat;
 	uint32_t		pf_creatorid_nat;
 	uint8_t			pf_has_nat_id;
@@ -54,6 +63,14 @@ struct cmm_conn {
 	/* Offload state */
 	int			flags;
 
+	/* pf route-to/reply-to egress override, per direction - 0 means
+	 * no override, resolve the route normally. orig comes from the
+	 * state that created this conn; rep comes from the NAT companion
+	 * state when one exists, since that's a different pf state with
+	 * its own independent route-to decision. */
+	int			rt_ifindex;
+	int			rt_ifindex_rep;
+
 	/* Routes for each direction */
 	struct cmm_route	*orig_route;
 	struct cmm_route	*rep_route;
@@ -62,6 +79,12 @@ struct cmm_conn {
 
 /* Initialize connection table */
 int cmm_conn_init(void);
+
+/*
+ * Check whether the kernel can pin offloaded PF states, and give CDX
+ * pf's idle timeouts.  Call once /dev/pfnotify is open.
+ */
+void cmm_conn_pin_init(struct cmm_global *g);
 void cmm_conn_fini(struct cmm_global *g);
 
 /*
@@ -69,6 +92,13 @@ void cmm_conn_fini(struct cmm_global *g);
  * Called from the event loop when the pfnotify fd is readable.
  */
 void cmm_conn_event(struct cmm_global *g);
+
+/*
+ * Retry offload for connections rejected earlier (e.g. CDX didn't
+ * know the interface yet). Returns the number successfully retried.
+ * Safe to call from an event handler as well as the periodic pass.
+ */
+unsigned int cmm_conn_retry_rejected(struct cmm_global *g);
 
 /*
  * Periodic maintenance: retry offload for pending connections,

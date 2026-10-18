@@ -376,10 +376,19 @@ int
 fci_drain(FCI_CLIENT *client)
 {
 	struct fci_event evt;
+	struct kevent kev;
+	struct timespec zero = { 0, 0 };
 	int rc;
 
 	if (client == NULL)
 		return (-1);
+
+	/* Collect our own kqueue's pending event too.  The caller watches
+	 * that kqueue, and until someone retrieves its event it stays
+	 * readable forever - the caller's loop would spin.  One call is
+	 * enough: if events are still queued the knote comes straight back. */
+	if (client->kq >= 0)
+		(void)kevent(client->kq, NULL, 0, &kev, 1, &zero);
 
 	while (1) {
 		rc = ioctl(client->fd, FCI_IOC_READ_EVT, &evt);
