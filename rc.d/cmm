@@ -16,10 +16,9 @@ rcvar="cmm_enable"
 desc="Connection Management Module for CDX offload"
 
 pidfile="/var/run/${name}.pid"
-
-start_cmd="cmm_start"
-stop_cmd="cmm_stop"
-status_cmd="cmm_status"
+# rc.subr's own start and stop: stop waits for cmm to exit, start won't
+# run a second copy. Two at once undo each other's CDX setup.
+command="/usr/local/sbin/cmm"
 
 start_precmd="cmm_prestart"
 
@@ -35,32 +34,6 @@ cmm_prestart()
 	if ! kldstat -q -m fci; then
 		warn "fci.ko not loaded — skipping cmm"
 		return 1
-	fi
-}
-
-cmm_start()
-{
-	echo "Starting ${name}."
-	/usr/local/sbin/cmm ${cmm_flags}
-}
-
-cmm_stop()
-{
-	if [ -f ${pidfile} ]; then
-		kill $(cat ${pidfile}) 2>/dev/null
-		rm -f ${pidfile}
-		echo "Stopped ${name}."
-	else
-		echo "${name} is not running."
-	fi
-}
-
-cmm_status()
-{
-	if [ -f ${pidfile} ] && kill -0 $(cat ${pidfile}) 2>/dev/null; then
-		echo "${name} is running as pid $(cat ${pidfile})."
-	else
-		echo "${name} is not running."
 	fi
 }
 
