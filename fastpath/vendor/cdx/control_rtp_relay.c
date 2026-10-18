@@ -291,19 +291,30 @@ static void rtp_flow_link(struct _thw_rtpflow *hw_flow, U32 hash)
 }
 
 #endif // 0
-/* remove a hardware flow entry from the packet engine hash */
-static void rtp_flow_unlink(struct _thw_rtpflow *hw_flow, U32 hash)
+/* remove a hardware flow entry from the packet engine hash
+ *
+ * Returns the cdx_ehash_delete_entry() tri-state so a caller that re-adds
+ * the same key can refuse to do so when the delete did not provably unlink
+ * it. On a hard failure the handle is kept, not cleared: the flow stays a
+ * tombstone pointing at the still-live entry, so a later unlink retries the
+ * delete instead of losing track of it and a re-point can decline to build
+ * a duplicate key over it. The success and unsynced arms leave the key
+ * provably out of the table, so the handle is cleared there as before. */
+static int rtp_flow_unlink(struct _thw_rtpflow *hw_flow)
 {
-	if ((hw_flow->eeh_entry_handle) &&
-			(ExternalHashTableDeleteKey(hw_flow->td, 
-																	hw_flow->eeh_entry_index, hw_flow->eeh_entry_handle))) 
-	{
+	int rc;
+
+	/* The table entry belongs to cdx_ehash_delete_entry() on every arm
+	 * of the DeleteKey contract (it tolerates a NULL handle); freeing it
+	 * here after a failed delete was a use-after-free (ISSUES.md A95). */
+	rc = cdx_ehash_delete_entry(hw_flow->td, hw_flow->eeh_entry_index,
+			hw_flow->eeh_entry_handle);
+	if (rc) {
 		DPA_ERROR("%s(%d)::unable to remove entry from hash table\n", __FUNCTION__, __LINE__);
 	}
-	//free table entry
-	if (hw_flow->eeh_entry_handle)
-		ExternalHashTableEntryFree(hw_flow->eeh_entry_handle);
-	hw_flow->eeh_entry_handle =  NULL;
+	if (rc == SUCCESS || rc == EN_EHASH_DELETE_UNSYNCED)
+		hw_flow->eeh_entry_handle = NULL;
+	return rc;
 }
 
 static void rtp_flow_remove(PRTPflow pFlow)
@@ -315,7 +326,7 @@ static void rtp_flow_remove(PRTPflow pFlow)
 	if ((hw_flow = pFlow->hw_flow))
 	{
 		/* remove it in ucode  */
-		rtp_flow_unlink(hw_flow, 0);
+		rtp_flow_unlink(hw_flow);
 
 	}
 
@@ -354,6 +365,7 @@ static int RTP_change_flow(PRTPflow pFlow, U16 ingress_socketID, U16 egress_sock
 {
 	struct _thw_rtpflow *hw_flow = pFlow->hw_flow;
 	U32	hash;
+	int	rc;
 
 	pFlow->takeover_resync = TRUE;
 	pFlow->rtp_info.first_packet = TRUE;
@@ -361,7 +373,15 @@ static int RTP_change_flow(PRTPflow pFlow, U16 ingress_socketID, U16 egress_sock
 	hash = HASH_RTP(pFlow->ingress_socketID);
 
 	// delete the previous entry in ucode
-	rtp_flow_unlink(hw_flow, hash);
+	rc = rtp_flow_unlink(hw_flow);
+	/* A hard delete failure means the old classifier key was not provably
+	 * unlinked; the re-add further down would build a duplicate-key bucket
+	 * for this flow. Refuse the re-point before any software state changes,
+	 * leaving the flow on its still-live entry for a later change to retry.
+	 * The success and unsynced arms leave the key provably out of the
+	 * table, so the re-add is safe there. */
+	if (rc && rc != EN_EHASH_DELETE_UNSYNCED)
+		return -1;
 
 	/* now managing changes in software flow */
 	slist_remove(&rtpflow_cache[hash], &pFlow->list);

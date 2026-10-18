@@ -134,7 +134,8 @@ found:
 		/* Register in the DPA device manager */
 		if (dpa_add_lagg_if(laggcmd.laggifname, &pEntry->itf,
 		    phys_onif->itf, laggcmd.macaddr,
-		    member_onifs, laggcmd.num_members)) {
+		    member_onifs, laggcmd.num_members,
+		    laggcmd.lagg_proto)) {
 			remove_onif_by_index(pEntry->itf.index);
 			lagg_free(pEntry);
 			rc = ERR_CREATION_FAILED;
