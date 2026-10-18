@@ -1714,6 +1714,7 @@ typedef struct fpp_lagg_cmd {
     u_int8_t    num_members;
     u_int8_t    pad2;
     char        member_ifnames[FPP_LAGG_MAX_MEMBERS][IFNAMSIZ]; /* all RX members */
+    u_int32_t   lagg_proto;	/* LAGG_PROTO_* from <net/if_lagg.h> */
 } __attribute__((__packed__)) fpp_lagg_cmd_t;
 
 /*-------------------------------- MacVlan -----------------------------------*/
