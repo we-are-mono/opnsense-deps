@@ -394,6 +394,27 @@ int cdx_init_ip_reassembly(void);
 
 void hw_ct_get_active(struct hw_ct *ct);
 
+/* External-hash entry disposition (ISSUES.md A95; implemented in
+ * cdx_ehash.c, where the full rationale lives).
+ *
+ * Every path that removes a key from an FMAN external hash table must go
+ * through cdx_ehash_delete_entry(): ExternalHashTableDeleteKey()'s
+ * tri-state (fm_ehash.h) decides whether the table entry may be freed,
+ * must be parked until a later host-command barrier proves the ucode has
+ * left it, or must be leaked forever. cdx_ehash_delete_entry() owns the
+ * handle on every arm; callers free only their own software wrappers.
+ *
+ * Serialization: no lock of their own. Callers run under the FCI
+ * ctrl.mutex (cdx_cmdhandler_freebsd.c) or at module exit with no handler
+ * in flight. Not callable under a spinlock: the barriers busy-wait on
+ * host-command completion. */
+int cdx_ehash_delete_entry(void *td, uint16_t index, void *handle);
+void cdx_ehash_quarantine_entry(void *tbl_entry);
+void cdx_ehash_quarantine_free_all(void);
+void cdx_ehash_quarantine_drain(void *td);
+void cdx_ehash_quarantine_abandon(void);
+unsigned int cdx_ehash_quarantine_pending(void);
+
 int cdx_set_expt_rate(uint32_t fm_index, uint32_t type, uint32_t limit, uint32_t burst_size);
 int cdx_get_expt_rate(void *cmd);
 int cdx_set_ff_rate(char *ifname, uint32_t cir, uint32_t pir);
