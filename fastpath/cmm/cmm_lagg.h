@@ -27,4 +27,18 @@ void cmm_lagg_notify(struct cmm_global *g, struct cmm_interface *itf);
 /* Check if a member port state change affects any LAGG — triggers failover */
 void cmm_lagg_member_check(struct cmm_global *g, struct cmm_interface *itf);
 
+/*
+ * Periodic backstop: re-probe every LAGG's protocol/membership even
+ * with no triggering event. A laggproto change alone (SIOCSLAGG) never
+ * generates a routing-socket event - the kernel just swaps the proto
+ * in place with no if_link_state_change()/rt_ifmsg() - so it's
+ * otherwise invisible to cmm until something unrelated (a member port
+ * flap) happens to trigger a re-probe. Call from the maintenance timer.
+ */
+void cmm_lagg_recheck_all(struct cmm_global *g);
+
+/* 1 s timer (kqueue ident 7) armed for a few seconds after a member's
+ * link changes; re-probes every LAGG. */
+void cmm_lagg_settle_tick(struct cmm_global *g);
+
 #endif /* CMM_LAGG_H */

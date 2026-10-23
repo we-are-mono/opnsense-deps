@@ -115,6 +115,14 @@ struct vlan_iface_info {
 
 #define LAGG_MAX_MEMBERS 8
 
+/* LAGG_PROTO_BROADCAST from <net/if_lagg.h>, duplicated here so this
+ * vendor header doesn't need to pull in FreeBSD's LAGG headers just to
+ * compare a protocol number. Kept in sync by hand - if_lagg.h defines
+ * this as a small, stable enum unlikely to renumber. */
+#define CDX_LAGG_PROTO_LOADBALANCE	3
+#define CDX_LAGG_PROTO_LACP		4
+#define CDX_LAGG_PROTO_BROADCAST	5
+
 //lagg (link aggregation) device information
 struct lagg_iface_info {
 	struct dpa_iface_info *parent;	/* TX egress port */
@@ -122,6 +130,7 @@ struct lagg_iface_info {
 	uint8_t num_members;
 	uint8_t mac_addr[ETH_ALEN];
 	uint8_t pad;
+	uint32_t lagg_proto;	/* LAGG_PROTO_*, from SIOCGLAGG via cmm */
 };
 
 //pppoe device information
