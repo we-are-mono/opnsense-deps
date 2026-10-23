@@ -311,6 +311,53 @@ itf_detect_pppoe(struct cmm_interface *itf)
 	}
 }
 
+/*
+ * A PPPoE entry with this name is already in CDX, left over from an earlier
+ * CMM run.  Keep it if it matches the current session, otherwise remove it.
+ * Returns 1 to keep, 0 when removed, -1 on error.
+ */
+static int
+cmm_pppoe_replace_stale(struct cmm_global *g, const fpp_pppoe_cmd_t *cur)
+{
+	fpp_pppoe_cmd_t q, resp, old;
+	unsigned short resp_len;
+	int found = 0, rc;
+
+	memset(&old, 0, sizeof(old));
+	memset(&q, 0, sizeof(q));
+	q.action = FPP_ACTION_QUERY;
+	for (;;) {
+		memset(&resp, 0, sizeof(resp));
+		resp_len = sizeof(resp);
+		if (fci_cmd(g->fci_handle, FPP_CMD_PPPOE_ENTRY,
+		    (unsigned short *)&q, sizeof(q),
+		    (unsigned short *)&resp, &resp_len) != 0 ||
+		    resp.action != 0)
+			break;
+		if (strncmp(resp.log_intf, cur->log_intf,
+		    sizeof(resp.log_intf)) == 0) {
+			old = resp;
+			found = 1;
+			break;
+		}
+		q.action = FPP_ACTION_QUERY_CONT;
+	}
+	if (!found)
+		return (-1);
+
+	if (old.sessionid == cur->sessionid &&
+	    memcmp(old.macaddr, cur->macaddr, ETHER_ADDR_LEN) == 0 &&
+	    strncmp(old.phy_intf, cur->phy_intf, sizeof(old.phy_intf)) == 0)
+		return (1);
+
+	old.action = FPP_ACTION_DEREGISTER;
+	rc = fci_write(g->fci_handle, FPP_CMD_PPPOE_ENTRY,
+	    sizeof(old), (unsigned short *)&old);
+	if (rc != 0)
+		return (-1);
+	return (0);
+}
+
 static int
 cmm_pppoe_register(struct cmm_global *g, struct cmm_interface *itf)
 {
@@ -343,9 +390,25 @@ cmm_pppoe_register(struct cmm_global *g, struct cmm_interface *itf)
 	rc = fci_write(g->fci_handle, FPP_CMD_PPPOE_ENTRY,
 	    sizeof(cmd), (unsigned short *)&cmd);
 	if (rc == FPP_ERR_PPPOE_ENTRY_ALREADY_REGISTERED) {
-		cmm_print(CMM_LOG_DEBUG,
-		    "pppoe: %s already in CDX, reusing", itf->ifname);
-	} else if (rc != 0) {
+		switch (cmm_pppoe_replace_stale(g, &cmd)) {
+		case 1:
+			cmm_print(CMM_LOG_DEBUG,
+			    "pppoe: %s already in CDX, reusing", itf->ifname);
+			rc = 0;
+			break;
+		case 0:
+			cmm_print(CMM_LOG_INFO,
+			    "pppoe: %s old session in CDX, replacing",
+			    itf->ifname);
+			cmd.action = FPP_ACTION_REGISTER;
+			rc = fci_write(g->fci_handle, FPP_CMD_PPPOE_ENTRY,
+			    sizeof(cmd), (unsigned short *)&cmd);
+			break;
+		default:
+			break;
+		}
+	}
+	if (rc != 0) {
 		cmm_print(CMM_LOG_WARN,
 		    "pppoe: register %s failed: %d", itf->ifname, rc);
 		return (-1);

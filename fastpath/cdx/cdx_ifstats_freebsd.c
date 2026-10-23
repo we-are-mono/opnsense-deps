@@ -5,9 +5,12 @@
  * FMan MURAM to hold per-interface packet/byte counters that FMan
  * hardware updates atomically during flow offload processing.
  *
- * Two free-lists are maintained:
+ * Two pools of slots:
  *   - PPPoE interfaces: cdx_pppoe_iface_ifinfo (with timestamp)
  *   - All other interfaces: cdx_iface_ifinfo (without timestamp)
+ *
+ * Which slots are in use is kept in kernel memory, not as list links in
+ * MURAM like the original, since FMan writes counters into that memory.
  *
  * Copyright 2014-2016 Freescale Semiconductor, Inc.
  * Copyright 2017,2021 NXP
@@ -38,11 +41,13 @@ static void *stats_mem;
 /* Stats area physical MURAM offset */
 static uint32_t stats_mem_phys;
 
-/* Free-list for all interfaces other than PPPoE */
-static struct cdx_iface_ifinfo *ifstats_freelist;
+#define NUM_IFSTATS_SLOTS (MAX_LOGICAL_INTERFACES - MAX_PPPoE_INTERFACES)
 
-/* Free-list for PPPoE */
-static struct cdx_pppoe_iface_ifinfo *pppoe_ifstats_freelist;
+/* Slots for PPPoE, then for all other interfaces, and which are in use */
+static struct cdx_pppoe_iface_ifinfo *pppoe_slots;
+static struct cdx_iface_ifinfo *ifstats_slots;
+static uint8_t pppoe_slot_used[MAX_PPPoE_INTERFACES];
+static uint8_t ifstats_slot_used[NUM_IFSTATS_SLOTS];
 
 /* MURAM handle for cleanup */
 static void *stats_muram_handle;
@@ -58,11 +63,7 @@ extern void *FmMurambaseAddr;
 int
 cdxdrv_init_stats(void *muram_handle)
 {
-	uint32_t ii;
-	uint32_t num_log_ifaces;
 	uint32_t size;
-	struct cdx_pppoe_iface_ifinfo *pppoe_stats;
-	struct cdx_iface_ifinfo *ifstats;
 
 	size = (MAX_PPPoE_INTERFACES *
 	    sizeof(struct cdx_pppoe_iface_ifinfo)) +
@@ -84,35 +85,15 @@ cdxdrv_init_stats(void *muram_handle)
 	    stats_mem, stats_mem_phys, size);
 
 	spin_lock(&dpa_statslist_lock);
-
-	/* Build PPPoE stats free-list */
-	pppoe_ifstats_freelist = (struct cdx_pppoe_iface_ifinfo *)stats_mem;
-	pppoe_stats = pppoe_ifstats_freelist;
-	for (ii = 0; ii < MAX_PPPoE_INTERFACES; ii++) {
-		if (ii != (MAX_PPPoE_INTERFACES - 1))
-			pppoe_stats->next = (pppoe_stats + 1);
-		else
-			pppoe_stats->next = NULL;
-		pppoe_stats++;
-	}
-
-	/* Build regular interface stats free-list */
-	ifstats = (struct cdx_iface_ifinfo *)pppoe_stats;
-	num_log_ifaces = MAX_LOGICAL_INTERFACES - MAX_PPPoE_INTERFACES;
-
-	ifstats_freelist = ifstats;
-	for (ii = 0; ii < num_log_ifaces; ii++) {
-		if (ii != (num_log_ifaces - 1))
-			ifstats->next = (ifstats + 1);
-		else
-			ifstats->next = NULL;
-		ifstats++;
-	}
-
+	pppoe_slots = (struct cdx_pppoe_iface_ifinfo *)stats_mem;
+	ifstats_slots = (struct cdx_iface_ifinfo *)(pppoe_slots +
+	    MAX_PPPoE_INTERFACES);
+	memset(pppoe_slot_used, 0, sizeof(pppoe_slot_used));
+	memset(ifstats_slot_used, 0, sizeof(ifstats_slot_used));
 	spin_unlock(&dpa_statslist_lock);
 
 	printf("cdx: cdxdrv_init_stats: %u PPPoE + %u regular slots\n",
-	    MAX_PPPoE_INTERFACES, num_log_ifaces);
+	    MAX_PPPoE_INTERFACES, NUM_IFSTATS_SLOTS);
 
 	return (0);
 }
@@ -137,11 +118,18 @@ alloc_iface_stats(uint32_t dev_type, struct dpa_iface_info *iface)
 
 	if (dev_type == IF_TYPE_PPPOE) {
 		struct cdx_pppoe_iface_ifinfo *pppoe_stats;
+		uint32_t i;
 
+		pppoe_stats = NULL;
 		spin_lock(&dpa_statslist_lock);
-		pppoe_stats = pppoe_ifstats_freelist;
+		for (i = 0; i < MAX_PPPoE_INTERFACES; i++) {
+			if (!pppoe_slot_used[i]) {
+				pppoe_slot_used[i] = 1;
+				pppoe_stats = &pppoe_slots[i];
+				break;
+			}
+		}
 		if (pppoe_stats != NULL) {
-			pppoe_ifstats_freelist = pppoe_stats->next;
 			memset(pppoe_stats, 0,
 			    sizeof(struct cdx_pppoe_iface_ifinfo));
 			iface->rxstats_index =
@@ -159,11 +147,18 @@ alloc_iface_stats(uint32_t dev_type, struct dpa_iface_info *iface)
 		spin_unlock(&dpa_statslist_lock);
 	} else {
 		struct cdx_iface_ifinfo *ifstats;
+		uint32_t i;
 
+		ifstats = NULL;
 		spin_lock(&dpa_statslist_lock);
-		ifstats = ifstats_freelist;
+		for (i = 0; i < NUM_IFSTATS_SLOTS; i++) {
+			if (!ifstats_slot_used[i]) {
+				ifstats_slot_used[i] = 1;
+				ifstats = &ifstats_slots[i];
+				break;
+			}
+		}
 		if (ifstats != NULL) {
-			ifstats_freelist = ifstats->next;
 			memset(ifstats, 0, sizeof(struct cdx_iface_ifinfo));
 			iface->rxstats_index =
 			    ((uint32_t)((uint8_t *)&ifstats->stats.rxstats -
@@ -190,33 +185,37 @@ alloc_iface_stats(uint32_t dev_type, struct dpa_iface_info *iface)
 }
 
 /*
- * free_iface_stats — Return a MURAM stats slot to the free-list.
+ * free_iface_stats — Return a MURAM stats slot to its pool.
+ *
+ * The pool comes from the slot's address, not dev_type: callers pass
+ * if_flags, which also carries IF_STATS_ENABLED.  Freeing a slot that is
+ * already free does nothing.
  */
 void
-free_iface_stats(uint32_t dev_type, struct dpa_iface_info *iface)
+free_iface_stats(uint32_t dev_type __unused, struct dpa_iface_info *iface)
 {
+	uintptr_t p, pppoe_base, if_base;
 
 	if (iface->stats == NULL)
 		return;
 
-	if (dev_type == IF_TYPE_PPPOE) {
-		struct cdx_pppoe_iface_ifinfo *pppoe_stats;
+	p = (uintptr_t)iface->stats;
+	pppoe_base = (uintptr_t)pppoe_slots;
+	if_base = (uintptr_t)ifstats_slots;
 
-		pppoe_stats =
-		    (struct cdx_pppoe_iface_ifinfo *)iface->stats;
-		spin_lock(&dpa_statslist_lock);
-		pppoe_stats->next = pppoe_ifstats_freelist;
-		pppoe_ifstats_freelist = pppoe_stats;
-		spin_unlock(&dpa_statslist_lock);
+	spin_lock(&dpa_statslist_lock);
+	if (p >= pppoe_base && p < if_base) {
+		pppoe_slot_used[(p - pppoe_base) /
+		    sizeof(struct cdx_pppoe_iface_ifinfo)] = 0;
+	} else if (p >= if_base && p < if_base +
+	    NUM_IFSTATS_SLOTS * sizeof(struct cdx_iface_ifinfo)) {
+		ifstats_slot_used[(p - if_base) /
+		    sizeof(struct cdx_iface_ifinfo)] = 0;
 	} else {
-		struct cdx_iface_ifinfo *ifstats;
-
-		ifstats = (struct cdx_iface_ifinfo *)iface->stats;
-		spin_lock(&dpa_statslist_lock);
-		ifstats->next = ifstats_freelist;
-		ifstats_freelist = ifstats;
-		spin_unlock(&dpa_statslist_lock);
+		DPA_ERROR("cdx: free_iface_stats: slot %p is not a stats "
+		    "slot\n", iface->stats);
 	}
+	spin_unlock(&dpa_statslist_lock);
 
 	iface->stats = NULL;
 

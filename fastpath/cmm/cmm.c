@@ -491,6 +491,7 @@ out:
 	cmm_socket_fini(g);
 	cmm_l2tp_fini(g);
 	cmm_tunnel_fini(g);
+	cmm_pppoe_fini(g);
 	cmm_vlan_fini(g);
 	cmm_lagg_fini(g);
 	cmm_fe_reset(g);
