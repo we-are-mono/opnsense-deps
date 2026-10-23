@@ -24,4 +24,9 @@ void cmm_vlan_fini(struct cmm_global *g);
 /* Called when interface flags change — register/deregister as needed */
 void cmm_vlan_notify(struct cmm_global *g, struct cmm_interface *itf);
 
+/* Deregister / re-register the VLANs on a parent that is going away or
+ * coming back (a LAGG being deregistered or re-registered) */
+void cmm_vlan_deregister_children(struct cmm_global *g, int parent_ifindex);
+void cmm_vlan_register_children(struct cmm_global *g, int parent_ifindex);
+
 #endif /* CMM_VLAN_H */

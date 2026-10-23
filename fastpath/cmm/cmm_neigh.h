@@ -56,4 +56,20 @@ void cmm_neigh_invalidate(sa_family_t af, const void *ip);
 /* Mark all neighbors as stale (full reset) */
 void cmm_neigh_flush_all(void);
 
+/* Re-resolve all resolved neighbors; on_changed fires per MAC change */
+void cmm_neigh_recheck_all(struct cmm_global *g,
+    void (*on_changed)(struct cmm_neigh *neigh, void *arg), void *arg);
+
+/* Kernel neighbor events (netlink); open returns the socket or -1 */
+int cmm_neigh_events_open(void);
+void cmm_neigh_events_close(void);
+int cmm_neigh_events_dispatch(
+    void (*on_changed)(struct cmm_neigh *neigh, void *arg), void *arg);
+
+/* Neighbor events read, neighbors they updated, full polls run */
+extern unsigned int cmm_neigh_nevents, cmm_neigh_nupdates, cmm_neigh_npolls;
+
+/* Whether the periodic full neighbor poll should run this pass */
+int cmm_neigh_poll_due(void);
+
 #endif /* CMM_NEIGH_H */

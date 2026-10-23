@@ -20,12 +20,15 @@
 #include <unistd.h>
 
 #include <netgraph/ng_message.h>
+#include <netgraph/ng_iface.h>
 #include <netgraph/ng_pppoe.h>
 #include <netgraph.h>
 
 #include "cmm.h"
 #include "cmm_pppoe.h"
 #include "cmm_itf.h"
+#include "cmm_route.h"
+#include "cmm_conn.h"
 
 /*
  * Query the ng_pppoe node associated with a pppN interface to get
@@ -40,40 +43,92 @@
  * physical interface.
  */
 /*
- * Helper: list hooks on a netgraph node and find a peer of the given type.
- * Returns the peer's node ID in *peer_id and the peer's hook name in
- * peer_hook (caller provides NG_HOOKSIZ buffer).  Returns 0 on success.
+ * Find an interface's ng_iface node. mpd5 renames the interface
+ * (ng0 -> pppoe0) but the node keeps its old name.
  */
 static int
-ng_find_peer_by_type(int csock, const char *node_path, const char *type,
-    uint32_t *peer_id, char *peer_hook)
+ng_find_iface_node(int csock, const char *ifname, char *path, size_t len)
 {
-	struct ng_mesg *resp = NULL;
-	struct hooklist *hl;
-	int i;
+	struct ng_mesg *resp = NULL, *nresp;
+	struct namelist *nl;
+	char npath[NG_PATHSIZ];
+	uint32_t i;
+	int rc = -1;
 
-	if (NgSendMsg(csock, node_path, NGM_GENERIC_COOKIE, NGM_LISTHOOKS,
+	if (NgSendMsg(csock, ".:", NGM_GENERIC_COOKIE, NGM_LISTNODES,
 	    NULL, 0) < 0)
 		return (-1);
-
 	if (NgAllocRecvMsg(csock, &resp, NULL) < 0 || resp == NULL)
 		return (-1);
 
-	hl = (struct hooklist *)resp->data;
-	for (i = 0; i < (int)hl->nodeinfo.hooks; i++) {
-		struct linkinfo *li = &hl->link[i];
-
-		if (strcmp(li->nodeinfo.type, type) == 0) {
-			*peer_id = li->nodeinfo.id;
-			if (peer_hook != NULL)
-				strlcpy(peer_hook, li->peerhook,
-				    NG_HOOKSIZ);
-			free(resp);
-			return (0);
+	nl = (struct namelist *)resp->data;
+	for (i = 0; i < nl->numnames && rc != 0; i++) {
+		if (strcmp(nl->nodeinfo[i].type, "iface") != 0)
+			continue;
+		snprintf(npath, sizeof(npath), "[%x]:", nl->nodeinfo[i].id);
+		if (NgSendMsg(csock, npath, NGM_IFACE_COOKIE,
+		    NGM_IFACE_GET_IFNAME, NULL, 0) < 0)
+			continue;
+		nresp = NULL;
+		if (NgAllocRecvMsg(csock, &nresp, NULL) < 0 || nresp == NULL)
+			continue;
+		if (strncmp(nresp->data, ifname, IFNAMSIZ) == 0) {
+			strlcpy(path, npath, len);
+			rc = 0;
 		}
+		free(nresp);
 	}
-
 	free(resp);
+	return (rc);
+}
+
+/*
+ * Search outward from a node for the ng_pppoe node, through whatever mpd5
+ * puts in between (tcpmss, ppp, tee).
+ */
+static int
+ng_find_pppoe(int csock, uint32_t start, uint32_t *pppoe_id,
+    char *session_hook)
+{
+	uint32_t seen[16];
+	char npath[NG_PATHSIZ];
+	int head = 0, tail = 0, i, j;
+
+	seen[tail++] = start;
+	while (head < tail) {
+		struct ng_mesg *resp = NULL;
+		struct hooklist *hl;
+
+		snprintf(npath, sizeof(npath), "[%x]:", seen[head++]);
+		if (NgSendMsg(csock, npath, NGM_GENERIC_COOKIE, NGM_LISTHOOKS,
+		    NULL, 0) < 0)
+			continue;
+		if (NgAllocRecvMsg(csock, &resp, NULL) < 0 || resp == NULL)
+			continue;
+
+		hl = (struct hooklist *)resp->data;
+		for (i = 0; i < (int)hl->nodeinfo.hooks; i++) {
+			struct linkinfo *li = &hl->link[i];
+
+			if (strcmp(li->nodeinfo.type, "pppoe") == 0) {
+				*pppoe_id = li->nodeinfo.id;
+				strlcpy(session_hook, li->peerhook,
+				    NG_HOOKSIZ);
+				free(resp);
+				return (0);
+			}
+			/* Stay on the session path, away from NICs and sockets. */
+			if (strcmp(li->nodeinfo.type, "ether") == 0 ||
+			    strcmp(li->nodeinfo.type, "socket") == 0)
+				continue;
+			for (j = 0; j < tail; j++)
+				if (seen[j] == li->nodeinfo.id)
+					break;
+			if (j == tail && tail < (int)(sizeof(seen) / sizeof(seen[0])))
+				seen[tail++] = li->nodeinfo.id;
+		}
+		free(resp);
+	}
 	return (-1);
 }
 
@@ -84,7 +139,7 @@ pppoe_query_netgraph(struct cmm_interface *itf)
 	char path[128];
 	char pppoe_path[128];
 	char session_hook[NG_HOOKSIZ];
-	uint32_t ppp_id, pppoe_id;
+	uint32_t pppoe_id;
 	int rc = -1;
 
 	if (NgMkSockNode(NULL, &csock, &dsock) < 0) {
@@ -111,10 +166,20 @@ pppoe_query_netgraph(struct cmm_interface *itf)
 	 */
 	if (NgSendMsg(csock, path, NGM_GENERIC_COOKIE, NGM_LISTHOOKS,
 	    NULL, 0) < 0) {
-		cmm_print(CMM_LOG_DEBUG,
-		    "pppoe: NGM_LISTHOOKS %s failed: %s",
-		    path, strerror(errno));
-		goto out;
+		/*
+		 * OPNsense names that node only when the interface is set up.
+		 * After a reconnect mpd5 makes a new, unnamed one, so start
+		 * from the interface's own node instead.
+		 */
+		if (ng_find_iface_node(csock, itf->ifname, path,
+		    sizeof(path)) != 0 ||
+		    NgSendMsg(csock, path, NGM_GENERIC_COOKIE, NGM_LISTHOOKS,
+		    NULL, 0) < 0) {
+			cmm_print(CMM_LOG_DEBUG,
+			    "pppoe: %s no netgraph node found",
+			    itf->ifname);
+			goto out;
+		}
 	}
 
 	{
@@ -153,49 +218,18 @@ pppoe_query_netgraph(struct cmm_interface *itf)
 			}
 			free(lresp);
 		} else {
-			/*
-			 * Not an ng_pppoe node — walk through peers.
-			 * Try: iface → pppoe (direct), or
-			 *      iface → ppp → pppoe (mpd5 with ng_ppp).
-			 */
-			int found = 0;
+			/* Not an ng_pppoe node — search through its peers. */
+			uint32_t self = hl->nodeinfo.id;
 
-			for (i = 0; i < (int)hl->nodeinfo.hooks; i++) {
-				struct linkinfo *li = &hl->link[i];
-
-				if (strcmp(li->nodeinfo.type, "pppoe") == 0) {
-					pppoe_id = li->nodeinfo.id;
-					strlcpy(session_hook, li->peerhook,
-					    sizeof(session_hook));
-					found = 1;
-					break;
-				}
-				if (strcmp(li->nodeinfo.type, "ppp") == 0)
-					ppp_id = li->nodeinfo.id;
-			}
 			free(lresp);
-
-			if (!found && ppp_id != 0) {
-				char ppp_path[128];
-
-				snprintf(ppp_path, sizeof(ppp_path),
-				    "[%x]:", ppp_id);
-				if (ng_find_peer_by_type(csock, ppp_path,
-				    "pppoe", &pppoe_id, session_hook) < 0) {
-					cmm_print(CMM_LOG_DEBUG,
-					    "pppoe: %s no ng_pppoe found",
-					    itf->ifname);
-					goto out;
-				}
-				found = 1;
-			}
-
-			if (!found) {
+			if (ng_find_pppoe(csock, self, &pppoe_id,
+			    session_hook) != 0) {
 				cmm_print(CMM_LOG_DEBUG,
 				    "pppoe: %s no ng_pppoe in graph",
 				    itf->ifname);
 				goto out;
 			}
+			found_session = 1;
 
 			snprintf(pppoe_path, sizeof(pppoe_path),
 			    "[%x]:", pppoe_id);
@@ -231,8 +265,7 @@ pppoe_query_netgraph(struct cmm_interface *itf)
 			}
 		}
 
-		if (!found_session &&
-		    strcmp(hl->nodeinfo.type, "pppoe") == 0) {
+		if (!found_session) {
 			cmm_print(CMM_LOG_DEBUG,
 			    "pppoe: %s no session hook found",
 			    itf->ifname);
@@ -356,6 +389,11 @@ cmm_pppoe_register(struct cmm_global *g, struct cmm_interface *itf)
 	    "pppoe: registered %s (session=%u parent=%s)",
 	    itf->ifname, itf->pppoe_session_id, parent->ifname);
 
+	/* Routes set up while the session was away go again on the new one,
+	 * now rather than at the next maintenance pass. */
+	cmm_route_invalidate_by_oif(g, itf->ifindex);
+	(void)cmm_conn_retry_rejected(g);
+
 	return (0);
 }
 
@@ -368,6 +406,10 @@ cmm_pppoe_deregister(struct cmm_global *g, struct cmm_interface *itf)
 
 	if (!(itf->itf_flags & ITF_F_FPP_PPPOE))
 		return (0);
+
+	/* Take routes off the session first, or CDX keeps them pointing at
+	 * an interface it no longer has. */
+	cmm_route_invalidate_by_oif(g, itf->ifindex);
 
 	parent = cmm_itf_find_by_index(itf->pppoe_parent_ifindex);
 

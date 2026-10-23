@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include "cmm.h"
@@ -108,6 +109,7 @@ main(int argc, char *argv[])
 	g->ctrl_listen_fd = -1;
 	g->autobridge_fd = -1;
 	g->pfnotify_fd = -1;
+	g->neigh_fd = -1;
 
 	while ((ch = getopt(argc, argv, "fd:D:")) != -1) {
 		switch (ch) {
@@ -128,6 +130,10 @@ main(int argc, char *argv[])
 			usage();
 		}
 	}
+
+	/* Once daemonized, stderr has no reader - route through syslog
+	 * so deny-rule/offload/FCI logging stays visible after that. */
+	openlog("cmm", LOG_PID | LOG_NDELAY, LOG_DAEMON);
 
 	cmm_print(CMM_LOG_INFO, "CMM starting (debug=%d)", g->debug_level);
 
@@ -258,6 +264,12 @@ main(int argc, char *argv[])
 		cmm_print(CMM_LOG_ERR, "route socket: %s", strerror(errno));
 		goto out;
 	}
+	/* Neighbor events keep MACs current; without them cmm polls. */
+	g->neigh_fd = cmm_neigh_events_open();
+	if (g->neigh_fd < 0)
+		cmm_print(CMM_LOG_WARN,
+		    "neigh: no kernel neighbor events, polling every pass");
+
 	g->rtsock_query_fd = cmm_rtsock_open();
 	if (g->rtsock_query_fd < 0) {
 		cmm_print(CMM_LOG_ERR, "route query socket: %s",
@@ -384,6 +396,13 @@ main(int argc, char *argv[])
 	    EV_ADD, 0, 0, (void *)(uintptr_t)4);
 	nev++;
 
+	/* Netlink: kernel neighbor (ARP/NDP) events */
+	if (g->neigh_fd >= 0) {
+		EV_SET(&kev[nev], g->neigh_fd, EVFILT_READ,
+		    EV_ADD, 0, 0, (void *)(uintptr_t)5);
+		nev++;
+	}
+
 	/* CDX flow counter sync timer (5s) */
 	EV_SET(&kev[nev], 5, EVFILT_TIMER, EV_ADD,
 	    NOTE_MSECONDS, CMM_STATS_SYNC_MS, NULL);
@@ -445,8 +464,12 @@ main(int argc, char *argv[])
 			if (events[i].filter == EVFILT_TIMER) {
 				if (events[i].ident == 5)
 					cmm_conn_stats_sync(g);
-				else if (events[i].ident == 6)
+				else if (events[i].ident == 6) {
 					cmm_conn_maintenance(g);
+					cmm_itf_ppp_recheck(g);
+				}
+				else if (events[i].ident == 7)
+					cmm_lagg_settle_tick(g);
 			} else if (events[i].udata ==
 			    (void *)(uintptr_t)1) {
 				/* Control socket: new connection */
@@ -470,6 +493,12 @@ main(int argc, char *argv[])
 			    (void *)(uintptr_t)4) {
 				/* pf_notify: state change event */
 				cmm_conn_event(g);
+			} else if (events[i].udata ==
+			    (void *)(uintptr_t)5) {
+				/* A neighbor came back or changed MAC:
+				 * offload its connections again now. */
+				if (cmm_route_neigh_events(g))
+					(void)cmm_conn_retry_rejected(g);
 			} else if (g->fci_catch != NULL &&
 			    (int)events[i].ident ==
 			    fci_fd(g->fci_catch)) {
@@ -483,6 +512,7 @@ main(int argc, char *argv[])
 out:
 	/* Clean shutdown */
 	cmm_ctrl_fini(g);
+	cmm_neigh_events_close();
 	cmm_sa_flush_all(g);
 	cmm_conn_deregister_all(g);
 	cmm_mcast_fini();
@@ -519,6 +549,7 @@ out:
 
 	pidfile_remove(pfh);
 	cmm_print(CMM_LOG_INFO, "exited");
+	closelog();
 
 	return (0);
 }

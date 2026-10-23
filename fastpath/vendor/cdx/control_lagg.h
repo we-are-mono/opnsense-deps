@@ -15,7 +15,9 @@ typedef struct _tLaggEntry {
 	struct slist_entry list;
 } LaggEntry, *PLaggEntry;
 
-/* Structure defining the LAGG ENTRY command */
+/* Structure defining the LAGG ENTRY command.
+ * Layout must match fpp_lagg_cmd_t (fastpath/cmm/fpp.h) field-for-field -
+ * FCI copies the wire bytes directly, no per-field translation. */
 typedef struct _tLaggCommand {
 	U16 action;
 	U16 pad;
@@ -25,6 +27,7 @@ typedef struct _tLaggCommand {
 	U8 num_members;
 	U8 unused;
 	U8 member_ifnames[LAGG_MAX_MEMBERS][IF_NAME_SIZE]; /* all RX members */
+	U32 lagg_proto;	/* LAGG_PROTO_* from <net/if_lagg.h> */
 } LaggCommand, *PLaggCommand;
 
 int lagg_init(void);

@@ -42,6 +42,10 @@ cmm_rtsock_open(void)
 	n = 1;
 	setsockopt(s, SOL_SOCKET, SO_RERROR, &n, sizeof(n));
 
+	/* Room for the burst of messages a WAN reconnect brings */
+	n = 1024 * 1024;
+	setsockopt(s, SOL_SOCKET, SO_RCVBUF, &n, sizeof(n));
+
 	return (s);
 }
 
@@ -162,6 +166,22 @@ cmm_rtsock_dispatch(struct cmm_global *g)
 	int n;
 
 	n = read(g->rtsock_fd, buf, sizeof(buf));
+	if (n < 0) {
+		if (errno == ENOBUFS) {
+			cmm_print(CMM_LOG_WARN,
+			    "rtsock: messages lost, rechecking PPP interfaces");
+			cmm_itf_ppp_recheck(g);
+		}
+		return;
+	}
+
+	/* Interface announcements are shorter than a route message. */
+	if (n >= (int)sizeof(struct if_announcemsghdr) &&
+	    ((struct if_announcemsghdr *)buf)->ifan_type == RTM_IFANNOUNCE) {
+		cmm_itf_handle_ifannounce(g, buf, n);
+		return;
+	}
+
 	if (n < (int)sizeof(struct rt_msghdr))
 		return;
 
